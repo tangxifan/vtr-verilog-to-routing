@@ -35,8 +35,68 @@ OTHER DEALINGS IN THE SOFTWARE.
 #include <unistd.h>
 #include <thread>
 
-#define CLOCK_INITIAL_VALUE 1
+#define CLOCK_INITIAL_VALUE _1
 #define MAX_REPEAT_SIM 128
+
+typedef enum
+{
+	_0 = 0,
+	_1 = 1,
+	_x = -1
+} val_list;
+
+inline static val_list _2val(signed char in)
+{
+	return 	(in == 0 || in == '0')?	_0:
+			(in == 1 || in == '1')?	_1:
+									_x;
+}
+
+inline static char _2chr(signed char in)
+{
+	return 	(in == 0 || in == '0')?	'0':
+			(in == 1 || in == '1')?	'1':
+									'x';
+}
+
+inline static val_list _not(val_list in)
+{
+	return 	(in == _0)? _1:
+			(in == _1)?	_0:
+						_x;
+}
+
+inline static val_list _not(signed char in)
+{
+	return _not(_2val(in));
+}
+
+static std::vector<val_list> gather_input(nnode_t *node, int cycle)
+{
+	std::vector<val_list> out;
+	for(int i =0; i< node->num_input_pins; i++)
+		out.push_back(_2val(get_pin_value(node->input_pins[i], cycle)));
+
+	return out;
+}
+
+static std::vector<val_list> gather_previous_output(nnode_t *node, int cycle)
+{
+	std::vector<val_list> out;
+	for(int i =0; i< node->num_output_pins; i++)
+		out.push_back(_2val(get_pin_value(node->output_pins[i], cycle-1)));
+
+	return out;
+}
+
+inline static bool trigger_clock(nnode_t *node, int cycle)
+{
+	if(cycle % get_clock_ratio(node) == 0)
+		return true;
+	else
+		return false;
+
+}
 
 typedef enum
 {
@@ -52,20 +112,20 @@ inline static edge_eval_e get_edge_type(npin_t *clk, int cycle)
 	if(!clk)
 		return UNK;
 
-	signed char prev = !CLOCK_INITIAL_VALUE;
-	signed char cur = CLOCK_INITIAL_VALUE;
+	val_list prev = _not(CLOCK_INITIAL_VALUE);
+	val_list cur = CLOCK_INITIAL_VALUE;
 
 	if(cycle > 0)
 	{
-		prev = get_pin_value(clk, cycle-1);
-		cur = get_pin_value(clk, cycle);
+		prev = _2val(get_pin_value(clk, cycle-1));
+		cur = _2val(get_pin_value(clk, cycle));
 	}
 
-	return 	((prev != cur) && (prev == 0 || cur == 1))?	RISING:
-			((prev != cur) && (prev == 1 || cur == 0))?	FALLING:
-			(cur == 1)?									HIGH:
-			(cur == 0)?									LOW:
-														UNK;
+	return 	((prev != cur) && (prev == _0 || cur == _1))?	RISING:
+			((prev != cur) && (prev == _1 || cur == _0))?	FALLING:
+			(cur == _1)?									HIGH:
+			(cur == _0)?									LOW:
+															UNK;
 }
 
 inline static bool ff_trigger(edge_type_e type, npin_t* clk, int cycle)
@@ -81,9 +141,18 @@ inline static bool ff_trigger(edge_type_e type, npin_t* clk, int cycle)
 	);
 }
 
-#define get_values_offset(cycle)	(((cycle) + (SIM_WAVE_LENGTH)) % (SIM_WAVE_LENGTH))
-#define is_clock_node(node)	( (node->type == CLOCK_NODE) || (std::string(node->name) == "top^clk") ) // Strictly for memories.
+inline static bool is_clock_node(nnode_t *node)
+{
+	if(node)
+	{
+		if(node->type == CLOCK_NODE)
+			return true;
 
+		else if(node->name && std::string(node->name) == "top^clk") // Strictly for memories.
+			return true;
+	}
+	return false;
+}
 
 static void simulate_cycle(int cycle, stages_t *s);
 static stages_t *simulate_first_cycle(netlist_t *netlist, int cycle, lines_t *output_lines);
@@ -862,6 +931,71 @@ static stages_t *stage_ordered_nodes(nnode_t **ordered_nodes, int num_ordered_no
 	return s;
 }
 
+static std::array<long, 3> count_values(nnode_t *node, int cycle)
+{
+	std::vector<val_list> pin_list = gather_input(node, cycle);
+	std::array<long, 3> result = { 0, 0 ,0 };
+
+	for (val_list pin: pin_list)
+		result[pin%result.size()]++;
+
+	return result;
+}
+
+static val_list logical_op(nnode_t *node, int cycle, val_list break_on)
+{
+	std::array<long, 3> result = count_values(node, cycle);
+
+	if		(result[break_on%result.size()] > 0) 	return break_on;
+	else if	(result[_x%result.size()] > 0)		return _x;
+	else							return _not(break_on);
+}
+
+static val_list logical_exclusive_or(nnode_t *node, int cycle)
+{
+	std::array<long, 3> result = count_values(node, cycle);
+
+	if		(result[_x%result.size()] > 0)		return _x;
+	else if	((result[_1%result.size()] %2) == 1)	return _1;
+	else							return _0;
+}
+
+
+static val_list func_op(nnode_t *node, int cycle, std::vector<std::array<val_list,3>> lut, int len)
+{
+	std::vector<val_list> pin_list = gather_input(node, cycle);
+	std::vector<int> possible_match;
+	int count = len;
+	for(int i=0; i < len; i++)
+		possible_match.push_back(i);
+
+	val_list output_val = _0;
+
+	//try to match one of the lut
+	for(int i=0; i<pin_list.size(); i++)
+	{
+		if(pin_list[i] != _1 || pin_list[i] != _0)
+			output_val = _x;
+
+		for(int j=0; j < possible_match.size(); j++)
+		{
+			if(possible_match[j] >= 0)
+			{
+				if(pin_list[i] != lut[possible_match[j]][i])
+				{
+					possible_match[j] = -1;
+					count--;
+				}
+			}
+		}
+	}
+
+	if(count)
+		output_val = _1;
+
+	return output_val;
+}
+
 /*
  * Given a node, this function will simulate that node's new outputs,
  * and updates those pins.
@@ -884,228 +1018,133 @@ static bool compute_and_store_value(nnode_t *node, int cycle)
 		case MULTIPLY:
 			compute_multiply_node(node, cycle);
 			break;
-		case LOGICAL_AND: // &&
+		case LOGICAL_AND:	// &&
 		{
 			verify_i_o_availabilty(node, -1, 1);
-			char unknown = FALSE;
-			char zero    = FALSE;
-			int i;
-			for (i = 0; i < node->num_input_pins; i++)
-			{
-				signed char pin = get_pin_value(node->input_pins[i], cycle);
+			val_list output_val = logical_op(node, cycle, _0);
 
-				if      (pin <  0) { unknown = TRUE; }
-				else if (pin == 0) { zero    = TRUE; break; }
-			}
-			if      (zero)    update_pin_value(node->output_pins[0],  0, cycle);
-			else if (unknown) update_pin_value(node->output_pins[0], -1, cycle);
-			else              update_pin_value(node->output_pins[0],  1, cycle);
+			update_pin_value(node->output_pins[0],  output_val, cycle);
 			break;
 		}
-		case LOGICAL_OR:
-		{	// ||
-			verify_i_o_availabilty(node, -1, 1);
-			char unknown = FALSE;
-			char one     = FALSE;
-			int i;
-			for (i = 0; i < node->num_input_pins; i++)
-			{
-				signed char pin = get_pin_value(node->input_pins[i], cycle);
-
-				if      (pin <  0) { unknown = TRUE; }
-				else if (pin == 1) { one     = TRUE; break; }
-			}
-			if      (one)     update_pin_value(node->output_pins[0],  1, cycle);
-			else if (unknown) update_pin_value(node->output_pins[0], -1, cycle);
-			else              update_pin_value(node->output_pins[0],  0, cycle);
-			break;
-		}
-		case LOGICAL_NAND:
-		{	// !&&
-			verify_i_o_availabilty(node, -1, 1);
-			char unknown = FALSE;
-			char one     = FALSE;
-			int i;
-			for (i = 0; i < node->num_input_pins; i++)
-			{
-				signed char pin = get_pin_value(node->input_pins[i], cycle);
-
-				if      (pin <  0) { unknown = TRUE; }
-				else if (pin == 0) { one     = TRUE; break; }
-			}
-			if      (one)     update_pin_value(node->output_pins[0],  1, cycle);
-			else if (unknown) update_pin_value(node->output_pins[0], -1, cycle);
-			else              update_pin_value(node->output_pins[0],  0, cycle);
-			break;
-		}
-		case LOGICAL_NOT: // !
-		case LOGICAL_NOR: // !|
+		case LOGICAL_OR:	// ||
 		{
 			verify_i_o_availabilty(node, -1, 1);
-			char unknown = FALSE;
-			char zero    = FALSE;
-			int i;
-			for (i = 0; i < node->num_input_pins; i++)
-			{
-				signed char pin = get_pin_value(node->input_pins[i], cycle);
+			val_list output_val = logical_op(node, cycle, _1);
 
-				if      (pin <  0) { unknown = TRUE; }
-				else if (pin == 1) { zero    = TRUE; break; }
-			}
-			if      (zero)    update_pin_value(node->output_pins[0],  0, cycle);
-			else if (unknown) update_pin_value(node->output_pins[0], -1, cycle);
-			else              update_pin_value(node->output_pins[0],  1, cycle);
+			update_pin_value(node->output_pins[0],  output_val, cycle);
+			break;
+
+		}
+		case LOGICAL_NAND:	// !&&
+		{
+			verify_i_o_availabilty(node, -1, 1);
+			val_list output_val = logical_op(node, cycle, _0);
+			
+			update_pin_value(node->output_pins[0],  _not(output_val), cycle);
 			break;
 		}
-		case LT: // < 010 1
+		case LOGICAL_NOT:	// !
+		case LOGICAL_NOR:	// !|
 		{
-			verify_i_o_availabilty(node, 3, 1);
-
-			signed char pin0 = get_pin_value(node->input_pins[0],cycle);
-			signed char pin1 = get_pin_value(node->input_pins[1],cycle);
-			signed char pin2 = get_pin_value(node->input_pins[2],cycle);
-
-			if      (pin0  < 0 || pin1  < 0 || pin2  < 0)
-				update_pin_value(node->output_pins[0], -1, cycle);
-			else if (pin0 == 0 && pin1 == 1 && pin2 == 0)
-				update_pin_value(node->output_pins[0],  1, cycle);
-			else
-				update_pin_value(node->output_pins[0],  0, cycle);
-
+			verify_i_o_availabilty(node, -1, 1);
+			val_list output_val = logical_op(node, cycle, _1);
+			
+			update_pin_value(node->output_pins[0],  _not(output_val), cycle);
 			break;
 		}
-		case GT: // > 100 1
+		case LT:	// < 010 1
 		{
 			verify_i_o_availabilty(node, 3, 1);
+			val_list output_val = func_op(node, cycle, {
+				{_0, _1, _0}
+			}, 1);
 
-			signed char pin0 = get_pin_value(node->input_pins[0],cycle);
-			signed char pin1 = get_pin_value(node->input_pins[1],cycle);
-			signed char pin2 = get_pin_value(node->input_pins[2],cycle);
-
-			if      (pin0  < 0 || pin1  < 0 || pin2  < 0)
-				update_pin_value(node->output_pins[0], -1, cycle);
-			else if (pin0 == 1 && pin1 == 0 && pin2 == 0)
-				update_pin_value(node->output_pins[0],  1, cycle);
-			else
-				update_pin_value(node->output_pins[0],  0, cycle);
-
+			update_pin_value(node->output_pins[0],  output_val, cycle);
 			break;
 		}
-		case ADDER_FUNC: // 001 1\n010 1\n100 1\n111 1
+		case GT:	// > 100 1
 		{
 			verify_i_o_availabilty(node, 3, 1);
+			val_list output_val = func_op(node, cycle, {
+				{_1, _0, _0}
+			},1);
 
-			signed char pin0 = get_pin_value(node->input_pins[0],cycle);
-			signed char pin1 = get_pin_value(node->input_pins[1],cycle);
-			signed char pin2 = get_pin_value(node->input_pins[2],cycle);
-
-			if (pin0 < 0 || pin1 < 0 || pin2 < 0)
-				update_pin_value(node->output_pins[0], -1, cycle);
-			else if (
-					   (pin0 == 0 && pin1 == 0 && pin2 == 1)
-					|| (pin0 == 0 && pin1 == 1 && pin2 == 0)
-					|| (pin0 == 1 && pin1 == 0 && pin2 == 0)
-					|| (pin0 == 1 && pin1 == 1 && pin2 == 1)
-			)
-				update_pin_value(node->output_pins[0], 1, cycle);
-			else
-				update_pin_value(node->output_pins[0], 0, cycle);
-
+			update_pin_value(node->output_pins[0],  output_val, cycle);
 			break;
 		}
-		case CARRY_FUNC: // 011 1\n100 1\n110 1\n111 1
+		case ADDER_FUNC:
 		{
 			verify_i_o_availabilty(node, 3, 1);
-
-			signed char pin0 = get_pin_value(node->input_pins[0],cycle);
-			signed char pin1 = get_pin_value(node->input_pins[1],cycle);
-			signed char pin2 = get_pin_value(node->input_pins[2],cycle);
-
-			if (pin0 < 0 || pin1 < 0 || pin2 < 0)
-				update_pin_value(node->output_pins[0], -1, cycle);
-			else if (
-				   (pin0 == 1 && (pin1 == 1 || pin2 == 1))
-				|| (pin1 == 1 && pin2 == 1)
-			)
-				update_pin_value(node->output_pins[0], 1, cycle);
-			else
-				update_pin_value(node->output_pins[0], 0, cycle);
-
+			val_list output_val = func_op(node, cycle, {
+				{_0, _0, _1},
+				{_0, _1, _0},
+				{_1, _0, _0},
+				{_1, _1, _1}	
+			}, 4);
+			
+			update_pin_value(node->output_pins[0],  output_val, cycle);
+			break;
+		}
+		case CARRY_FUNC:
+		{
+			verify_i_o_availabilty(node, 3, 1);
+			val_list output_val = func_op(node, cycle, {
+				{_x, _1, _1},
+				{_0, _1, _1},
+				{_1, _0, _1},
+				{_1, _x, _1},
+				{_1, _1, _0},
+				{_1, _1, _x},
+				{_1, _1, _1}		
+			}, 7);
+			
+			update_pin_value(node->output_pins[0],  output_val, cycle);
 			break;
 		}
 		case NOT_EQUAL:	  // !=
 		case LOGICAL_XOR: // ^
 		{
 			verify_i_o_availabilty(node, -1, 1);
-			char unknown = FALSE;
-			int ones     = 0;
-			int i;
-			for (i = 0; i < node->num_input_pins; i++)
-			{
-				signed char pin = get_pin_value(node->input_pins[i], cycle);
+			val_list output_val = logical_exclusive_or(node, cycle);
 
-				if      (pin <  0) { unknown = TRUE; break; }
-				else if (pin == 1) { ones++; }
-			}
-			if      (unknown)         update_pin_value(node->output_pins[0], -1, cycle);
-			else if ((ones % 2) == 1) update_pin_value(node->output_pins[0],  1, cycle);
-			else                      update_pin_value(node->output_pins[0],  0, cycle);
+			update_pin_value(node->output_pins[0], output_val, cycle);
 			break;
 		}
 		case LOGICAL_EQUAL:	// ==
 		case LOGICAL_XNOR:  // !^
 		{
 			verify_i_o_availabilty(node, -1, 1);
-			char unknown = FALSE;
-			int ones = 0;
-			int i;
-			for (i = 0; i < node->num_input_pins; i++)
-			{
-				signed char pin = get_pin_value(node->input_pins[i], cycle);
+			val_list output_val = logical_exclusive_or(node, cycle);
 
-				if (pin <  0) { unknown = TRUE; break; }
-				if (pin == 1) { ones++; }
-			}
-			if      (unknown)         update_pin_value(node->output_pins[0], -1, cycle);
-			else if ((ones % 2) == 1) update_pin_value(node->output_pins[0],  0, cycle);
-			else                      update_pin_value(node->output_pins[0],  1, cycle);
+			update_pin_value(node->output_pins[0], _not(output_val), cycle);
 			break;
 		}
 		case BITWISE_NOT:
 		{
 			verify_i_o_availabilty(node, 1, 1);
+			val_list pin = _2val(get_pin_value(node->input_pins[0], cycle));
 
-			signed char pin = get_pin_value(node->input_pins[0], cycle);
-
-			if      (pin  < 0) update_pin_value(node->output_pins[0], -1, cycle);
-			else if (pin == 1) update_pin_value(node->output_pins[0],  0, cycle);
-			else               update_pin_value(node->output_pins[0],  1, cycle);
+			update_pin_value(node->output_pins[0], _not(pin), cycle);
 			break;
 		}
 		case CLOCK_NODE:
 		{
-			for (int i = 0; i < node->num_output_pins; i++)
+			/* this node is driven via an input.*/
+			if(is_node_complete(node,cycle))
+				break;
+
+			std::vector<val_list> pins = gather_previous_output(node,cycle);
+			std::vector<val_list> output;
+			for (int i=0; i<node->num_output_pins; i++)
 			{
-				/* if the pin is not an input.. find a clock to drive it.*/
-				int pin_cycle = get_pin_cycle(node->output_pins[i]);
-				if(pin_cycle != cycle)
+				if(!node->internal_clk_warn)
 				{
-					if(!node->internal_clk_warn)
-					{
-						node->internal_clk_warn = true;
-						warning_message(SIMULATION_ERROR,-1,-1,"clock(%s) is internally driven, verify your circuit", node->name);
-					}
-					//toggle according to ratio
-					signed char prev_value = !CLOCK_INITIAL_VALUE;
-					if(cycle)
-						prev_value = get_pin_value(node->output_pins[i], cycle-1);
-
-					if(prev_value < 0)
-						prev_value = !CLOCK_INITIAL_VALUE;
-
-					signed char cur_value = (cycle % get_clock_ratio(node)) ? prev_value : !prev_value;
-					update_pin_value(node->output_pins[i], cur_value, cycle);
+					node->internal_clk_warn = true;
+					warning_message(SIMULATION_ERROR,-1,-1,"clock(%s) is internally driven, verify your circuit", node->name);
 				}
+
+				//toggle according to ratio
+				update_pin_value(node->output_pins[i], (trigger_clock(node,cycle)) ? _not(pins[i]) : pins[i], cycle);
 			}
 			break;
 		}
@@ -1168,51 +1207,32 @@ static bool compute_and_store_value(nnode_t *node, int cycle)
 	}
 
 	// Count number of ones and toggles for activity estimation
-	bool covered = true;
-	bool skip_node_from_coverage = (
-		type == INPUT_NODE ||
-		type == OUTPUT_NODE ||
-		type == CLOCK_NODE ||
-		type == GND_NODE ||
-		type == VCC_NODE ||
-		type == PAD_NODE
-	);
 
-	if(!skip_node_from_coverage)
+	if(!node->covered)
 	{
-		for (int i = 0; i < node->num_output_pins; i++) {
-			if ( node->output_pins[i]->ace_info != NULL ) {
+		if(	type == INPUT_NODE ||
+			type == OUTPUT_NODE ||
+			type == CLOCK_NODE ||
+			type == GND_NODE ||
+			type == VCC_NODE ||
+			type == PAD_NODE)
+		{
+			node->covered = true;
+		}
+		else
+		{
+			int i;
+			for (i = 0; i < node->num_output_pins; i++)
+				if(node->output_pins[i]->coverage < 3)
+					break;
 
-				signed char pin_value = get_pin_value(node->output_pins[i],cycle);
-				// last_pin_value = get_pin_value(node->output_pins[i],cycle-1);
-				// Pin values for cycle-1 were not correct on Wave boundaries. Needed to store it in ace object.
-				signed char last_pin_value = node->output_pins[i]->ace_info->value;
-
-				// # of ones
-				if ( pin_value == 1 ) 
-				{
-					node->output_pins[i]->ace_info->num_ones += pin_value;
-				}
-
-				// # of toggles
-				if ( ( pin_value != last_pin_value ) && (last_pin_value != -1 ) ) 
-				{
-					node->output_pins[i]->ace_info->num_toggles++;
-					node->output_pins[i]->coverage++;
-					if(node->output_pins[i]->coverage < 2)
-						covered = false;
-				}
-
-				node->output_pins[i]->ace_info->value = pin_value;
-			}
+			if(i == node->num_output_pins)
+				node->covered = true;	
 		}
 	}
-	if(covered || skip_node_from_coverage)
-		node->covered = true;
-	return true;
+
+	return node->covered;
 }
-
-
 
 /*
  * Gets the number of nodes whose output pins have been sufficiently covered.
@@ -1222,7 +1242,7 @@ static int get_num_covered_nodes(stages_t *s)
 	int covered_nodes = 0;
 	for(int i = 0; i < s->count; i++)
 		for (int j = 0; j < s->counts[i]; j++)
-			covered_nodes += (s->stages[i][j]->covered)? 1: 0;
+			covered_nodes += (s->stages[i][j]->covered);
 
 	return covered_nodes;
 }
@@ -1246,7 +1266,7 @@ static int is_node_complete(nnode_t* node, int cycle)
 void set_clock_ratio(int rat, nnode_t *node)
 {
 	//change the value only for clocks
-	if(!node || node->type != CLOCK_NODE)
+	if(!is_clock_node(node))
 	 return;
 
 	node->ratio = rat;
@@ -1259,7 +1279,7 @@ void set_clock_ratio(int rat, nnode_t *node)
 int get_clock_ratio(nnode_t *node)
 {
 	//change the value only for clocks
-	if(!node || node->type != CLOCK_NODE)
+	if(!is_clock_node(node))
 		return 0;
 
 	return node->ratio;
@@ -1558,12 +1578,15 @@ static void initialize_pin(npin_t *pin)
 		pin->values = (signed char *)vtr::malloc(SIM_WAVE_LENGTH * sizeof(signed char));
 		pin->cycle  = (int *)vtr::malloc(sizeof(int));
 	}
-	
-	memset(
-		pin->values, 
-		(pin->node && pin->node->has_initial_value)? pin->node->initial_value: global_args.sim_initial_value,
-		SIM_WAVE_LENGTH
-	);
+	signed char init_value = _x;
+	if		(pin->node && pin->node->type == CLOCK_NODE)
+		init_value = _not(CLOCK_INITIAL_VALUE);
+	else if	(pin->node && pin->node->has_initial_value)
+		init_value = pin->node->initial_value;
+	else
+		init_value = global_args.sim_initial_value;
+
+	memset(pin->values, init_value, SIM_WAVE_LENGTH);
 	*(pin->cycle) = -1;
 }
 
@@ -1575,13 +1598,37 @@ static void initialize_pin(npin_t *pin)
  */
 static void update_pin_value(npin_t *pin, signed char value, int cycle)
 {
-	init_write(pin);
+	//init_write(pin);
 	if (pin->values == NULL)
 		initialize_pin(pin);
 	
-	pin->values[get_values_offset(cycle)] = value;
+	pin->values[cycle%SIM_WAVE_LENGTH] = value;
 	*(pin->cycle) = cycle;
-	close_writer(pin);
+	
+	if ( pin->ace_info != NULL ) {
+
+		signed char pin_value = get_pin_value(pin,cycle);
+		// last_pin_value = get_pin_value(node->output_pins[i],cycle-1);
+		// Pin values for cycle-1 were not correct on Wave boundaries. Needed to store it in ace object.
+		signed char last_pin_value = pin->ace_info->value;
+
+		// # of ones
+		if ( pin_value == 1 ) 
+		{
+			pin->ace_info->num_ones += pin_value;
+		}
+
+		// # of toggles
+		if ( ( pin_value != last_pin_value ) && (last_pin_value != -1 ) ) 
+		{
+			pin->ace_info->num_toggles++;
+			pin->coverage++;
+		}
+
+		pin->ace_info->value = pin_value;
+	}
+
+	//close_writer(pin);
 }
 
 /*
@@ -1595,9 +1642,9 @@ signed char get_pin_value(npin_t *pin, int cycle)
 	signed char to_return = (pin->node && pin->node->has_initial_value)? pin->node->initial_value: global_args.sim_initial_value;
 	if( pin->values )
 	{
-		init_read(pin);
-		to_return = pin->values[get_values_offset(cycle)];
-		close_reader(pin);
+		//init_read(pin);
+		to_return = pin->values[cycle%SIM_WAVE_LENGTH];
+		//close_reader(pin);
 	}
 	return to_return;
 }
@@ -1613,9 +1660,9 @@ static int get_pin_cycle(npin_t *pin)
 	int to_return = -1;
 	if( pin->cycle )
 	{
-		init_read(pin);
+		//init_read(pin);
 		to_return = *(pin->cycle);
-		close_reader(pin);
+		//close_reader(pin);
 	}
 	return to_return;
 }

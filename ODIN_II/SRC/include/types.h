@@ -242,6 +242,7 @@ typedef enum
 	OUTPUT_NODE,
 	GND_NODE,
 	VCC_NODE,
+	INTERNAL_CLOCK_NODE,
 	CLOCK_NODE,
 	ADD, // +
 	MINUS, // -
