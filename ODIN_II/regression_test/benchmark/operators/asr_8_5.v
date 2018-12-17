@@ -13,7 +13,7 @@ always @ ( posedge clk )
 begin
     case(rst)
         0: c = a >>> 5;
-        1: c = 0;
+        default: c = 0;
     endcase
 end
 

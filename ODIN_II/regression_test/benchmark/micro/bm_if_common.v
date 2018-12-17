@@ -37,17 +37,19 @@ a top_a(clock, a_in, temp_a);
 
 always @(posedge clock)
 begin
-	if (c_in == 1'b0)
-	begin
-		out0 <= 2'b00;
-		out1 <= 1'b0;
-	end
-	else
-	begin
-		out0 <= a_in & b_in;
-		out1 <= c_in & d_in;
-	end
-	out2 <= temp_a;
+	case(c_in)
+		1'b0: 
+		begin
+			out0 <= 2'b00;
+			out1 <= 1'b0;
+		end
+		default:
+		begin
+			out0 <= a_in & b_in;
+			out1 <= d_in;
+
+		end
+	endcase
 end
 
 endmodule

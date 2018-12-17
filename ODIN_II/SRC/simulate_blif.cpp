@@ -144,7 +144,7 @@ static void compute_unary_sub_node(nnode_t *node, int cycle);
 
 
 static void update_pin_value(npin_t *pin, signed char value, int cycle);
-static int get_pin_cycle(npin_t *pin);
+static bool pin_cycle_is_less(npin_t *pin, int cycle);
 
 signed char get_line_pin_value(line_t *line, int pin_num, int cycle);
 static int line_has_unknown_pin(line_t *line, int cycle);
@@ -581,7 +581,7 @@ static void update_undriven_input_pins(nnode_t *node, int cycle)
 	{
 		for (i = 0; i < node->num_input_pins; i++)
 		{
-			if (get_pin_cycle( node->input_pins[i]) < cycle-1)
+			if (pin_cycle_is_less( node->input_pins[i], cycle-1))
 			{
 				// Print the trace.
 				nnode_t *root = print_update_trace(node, cycle);
@@ -643,10 +643,10 @@ static int is_node_ready(nnode_t* node, int cycle)
 		npin_t *clock_pin = node->input_pins[1];
 		// Flip-flops depend on the D input from the previous cycle and the clock from this cycle.
 
-		if (get_pin_cycle(D_pin) < cycle-1)
+		if (pin_cycle_is_less(D_pin, cycle-1))
 			return FALSE;
 
-		if (get_pin_cycle(clock_pin) < cycle )
+		if (pin_cycle_is_less(clock_pin, cycle ))
 			return FALSE;
 	}
 	else if (node->type == MEMORY)
@@ -658,12 +658,12 @@ static int is_node_ready(nnode_t* node, int cycle)
 			// The data and write enable inputs rely on the values from the previous cycle.
 			if (!strcmp(pin->mapping, "data") || !strcmp(pin->mapping, "data1") || !strcmp(pin->mapping, "data2"))
 			{
-				if (get_pin_cycle(pin) < cycle-1)
+				if (pin_cycle_is_less(pin,cycle-1))
 					return FALSE;
 			}
 			else
 			{
-				if (get_pin_cycle(pin) < cycle)
+				if (pin_cycle_is_less(pin, cycle))
 					return FALSE;
 			}
 		}
@@ -672,7 +672,7 @@ static int is_node_ready(nnode_t* node, int cycle)
 	{
 		int i;
 		for (i = 0; i < node->num_input_pins; i++)
-			if (get_pin_cycle(node->input_pins[i]) < cycle)
+			if (pin_cycle_is_less(node->input_pins[i], cycle))
 				return FALSE;
 	}
 	return TRUE;
@@ -1060,8 +1060,7 @@ static bool compute_and_store_value(nnode_t *node, int cycle)
 				verify_i_o_availabilty(node, -1, 1);
 
 				/* if the pin is not an input.. find a clock to drive it.*/
-				int pin_cycle = get_pin_cycle(node->output_pins[0]);
-				if(pin_cycle != cycle)
+				if(pin_cycle_is_less(node->output_pins[0], cycle))
 				{
 					if(!node->internal_clk_warn)
 					{
@@ -1084,19 +1083,18 @@ static bool compute_and_store_value(nnode_t *node, int cycle)
 			{
 				verify_i_o_availabilty(node, 1, 1);
 
-				int pin_cycle = get_pin_cycle(node->input_pins[0]);
-				if(pin_cycle == cycle)
-				{
-					update_pin_value(node->output_pins[0], get_pin_value(node->input_pins[0],cycle), cycle);
-				}
-				else
+				if(pin_cycle_is_less(node->input_pins[0], cycle))
 				{
 					if(!node->internal_clk_warn)
 					{
 						node->internal_clk_warn = true;
 						warning_message(SIMULATION_ERROR,-1,-1,"node used as clock (%s) is itself driven by a clock, verify your circuit", node->name);
 					}
+				}
+				else
+				{
 					update_pin_value(node->output_pins[0], get_pin_value(node->input_pins[0],cycle-1), cycle);
+					update_pin_value(node->output_pins[0], get_pin_value(node->input_pins[0],cycle), cycle);
 				}
 			}
 			break;
@@ -1226,7 +1224,7 @@ static int is_node_complete(nnode_t* node, int cycle)
 {
 	int i;
 	for (i = 0; i < node->num_output_pins; i++)
-		if (node->output_pins[i] && (get_pin_cycle(node->output_pins[i]) < cycle))
+		if (node->output_pins[i] && (pin_cycle_is_less(node->output_pins[i], cycle)))
 			return FALSE;
 
 	return TRUE;
@@ -1560,7 +1558,7 @@ static void update_pin_value(npin_t *pin, signed char value, int cycle)
 	if (pin->values == NULL)
 		initialize_pin(pin);
 	
-	pin->values->update_value(value, cycle);
+	pin->values->update_value(cycle, value);
 }
 
 /*
@@ -1569,7 +1567,7 @@ static void update_pin_value(npin_t *pin, signed char value, int cycle)
 signed char get_pin_value(npin_t *pin, int cycle)
 {
 	if (pin->values == NULL)
-		initialize_pin(pin);
+		return -1;
 
 	return pin->values->get_value(cycle);
 }
@@ -1577,12 +1575,12 @@ signed char get_pin_value(npin_t *pin, int cycle)
 /*
  * Gets the cycle of the given pin
  */
-static int get_pin_cycle(npin_t *pin)
+static bool pin_cycle_is_less(npin_t *pin, int cycle)
 {
-	if (pin->values == NULL)
-		initialize_pin(pin);
-
-	return pin->values->get_cycle();
+	return (
+		(pin->values == NULL)
+		|| pin->values->cycle_is_less_than(cycle)
+	);
 }
 
 /*
@@ -3663,7 +3661,7 @@ static nnode_t *print_update_trace(nnode_t *bottom_node, int cycle)
 
 				// If an input is found which hasn't been updated since before cycle-1, traverse it.
 				int is_undriven = FALSE;
-				if (get_pin_cycle(pin) < cycle-1)
+				if (pin_cycle_is_less(pin, cycle-1))
 				{
 					// Only add each node for traversal once.
 					if (!found_undriven_pin)
