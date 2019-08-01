@@ -158,6 +158,9 @@ class RRGraphGSB {
                                  const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side, 
                                  const size_t& track_id) const;
   public: /* Mutators */
+    void add_node(const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side,
+                  const t_rr_type& node_type, const size_t& index,
+                  const RRNodeId& rr_node_id, const enum PORTS& node_direction); 
   public: /* Coordinator and side conversion */
     DeviceCoordinator get_side_block_coordinator(const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side) const;
     DeviceCoordinator get_sb_coordinator(const DeviceCoordinator& gsb_coordinator) const;
@@ -167,8 +170,20 @@ class RRGraphGSB {
     e_side get_cb_chan_side(const e_side& ipin_side) const;
     std::vector<e_side> get_cb_ipin_sides(const t_rr_type& cb_type) const;
     t_rr_type get_chan_node_type(const e_side& gsb_side) const;
-  public: /* Build/Invalidate fast node look-up */
+  public: /* Build/Free fast node look-up */
+    void reserve_node_lookup(const DeviceCoordinator& gsb_coordinator, const size_t& num_sides);
+    void reserve_port_lookup(const DeviceCoordinator& gsb_coordinator, const size_t& num_sides);
+    void reserve_lookup(const DeviceCoordinator& gsb_coordinator, const size_t& num_sides);
+    void resize_node_lookup_upon_need(const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side,
+                                      const t_rr_type& node_type, const size_t& index); 
+    void resize_port_lookup_upon_need(const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side,
+                                      const t_rr_type& node_type, const size_t& index); 
+    void resize_lookup_upon_need(const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side,
+                                 const t_rr_type& node_type, const size_t& index); 
     void invalidate_fast_node_lookup() const;
+    void invalidate_fast_port_lookup() const;
+    void invalidate_fast_lookup() const;
+  public: /* Validate/Invalidate fast node look-up */
     bool valid_fast_node_lookup() const;
     bool valid_gsb_coordinator(const DeviceCoordinator& gsb_coordinator) const;
     bool valid_gsb_side(const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side) const;

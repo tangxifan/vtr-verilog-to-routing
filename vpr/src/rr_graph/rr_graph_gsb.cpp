@@ -351,6 +351,28 @@ bool RRGraphGSB::is_sb_node_passing_wire(const RRGraph& rr_graph, /* Need RRGrap
   return true;
 }
 
+
+/************************************************************************
+ * Mutators
+ ************************************************************************/
+/* Add a node to the fast look-up */
+void RRGraphGSB::add_node(const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side,
+                          const t_rr_type& node_type, const size_t& index,
+                          const RRNodeId& rr_node_id, const enum PORTS& node_direction) {
+  /* Resize GSB fast look-up upon needs */
+  resize_lookup_upon_need(gsb_coordinator, gsb_side, node_type, index);
+
+  size_t x = gsb_coordinator.get_x();
+  size_t y = gsb_coordinator.get_y();
+  SideManager side_manager(gsb_side); 
+
+  /* Fill node fast look-up */
+  node_lookup_[x][y][side_manager.to_size_t()][(size_t)node_type][index] = rr_node_id;
+  /* Fill port direction fast look-up */
+  port_lookup_[x][y][side_manager.to_size_t()][(size_t)node_type][index] = node_direction;
+  return;
+}
+
 /************************************************************************
  * Coordinator and side conversion
  ************************************************************************/
@@ -497,11 +519,129 @@ t_rr_type RRGraphGSB::get_chan_node_type(const e_side& gsb_side) const {
 }
 
 /************************************************************************
- *  Build or Invalidate the fast look-up for the GSB
+ *  Build/Free the fast look-up for the GSB
  ************************************************************************/
+
+void RRGraphGSB::reserve_node_lookup(const DeviceCoordinator& gsb_coordinator, const size_t& num_sides) {
+  size_t x = gsb_coordinator.get_x();
+  size_t y = gsb_coordinator.get_y();
+
+  /* Reserve [x][y] in fast look-up  */
+  node_lookup_.resize(x);
+  for (size_t ix = 0; ix < node_lookup_.size(); ++ix) {
+    node_lookup_[ix].resize(y);
+    for (size_t iy = 0; iy < node_lookup_[ix].size(); ++iy) {
+      /* Reserve [gsb_side] in fast look-up */
+      node_lookup_[ix][iy].resize(num_sides);
+    }
+  }
+  return;
+}
+
+void RRGraphGSB::reserve_port_lookup(const DeviceCoordinator& gsb_coordinator, const size_t& num_sides) {
+  size_t x = gsb_coordinator.get_x();
+  size_t y = gsb_coordinator.get_y();
+
+  /* Reserve [x][y] in fast look-up  */
+  port_lookup_.resize(x);
+  for (size_t ix = 0; ix < port_lookup_.size(); ++ix) {
+    port_lookup_[ix].resize(y);
+    for (size_t iy = 0; iy < port_lookup_[ix].size(); ++iy) {
+      /* Reserve [gsb_side] in fast look-up */
+      port_lookup_[ix][iy].resize(num_sides);
+    }
+  }
+  return;
+}
+
+void RRGraphGSB::reserve_lookup(const DeviceCoordinator& gsb_coordinator, const size_t& num_sides) {
+  reserve_node_lookup(gsb_coordinator, num_sides);
+  reserve_port_lookup(gsb_coordinator, num_sides);
+  return;
+}
+
+void RRGraphGSB::resize_node_lookup_upon_need(const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side,
+                                              const t_rr_type& node_type, const size_t& index) {
+  size_t x = gsb_coordinator.get_x();
+  size_t y = gsb_coordinator.get_y();
+
+  /* Resize [x][y] in fast look-up upon needs */
+  if (x >= node_lookup_.size()) {
+    node_lookup_.resize(x);
+  }
+  if (y >= node_lookup_[x].size()) {
+    node_lookup_[x].resize(y);
+  }
+  /* Resize [gsb_side] in fast look-up upon needs */
+  SideManager side_manager(gsb_side);
+  if (side_manager.to_size_t() >= node_lookup_[x][y].size()) {
+    node_lookup_[x][y].resize(side_manager.to_size_t());
+  }
+  /* Resize [node_type] in fast look-up upon needs */
+  if ((size_t)node_type >= node_lookup_[x][y][side_manager.to_size_t()].size()) {
+    node_lookup_[x][y][side_manager.to_size_t()].resize((size_t)node_type);
+  }
+  /* Resize [index] in fast look-up upon needs */
+  if (index >= node_lookup_[x][y][side_manager.to_size_t()][(size_t)node_type].size()) {
+    node_lookup_[x][y][side_manager.to_size_t()][(size_t)node_type].resize(index);
+  }
+  return;
+} 
+
+void RRGraphGSB::resize_port_lookup_upon_need(const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side,
+                                              const t_rr_type& node_type, const size_t& index) {
+  size_t x = gsb_coordinator.get_x();
+  size_t y = gsb_coordinator.get_y();
+
+  /* Resize [x][y] in fast look-up upon needs */
+  if (x >= port_lookup_.size()) {
+    port_lookup_.resize(x);
+  }
+  if (y >= port_lookup_[x].size()) {
+    port_lookup_[x].resize(y);
+  }
+  /* Resize [gsb_side] in fast look-up upon needs */
+  SideManager side_manager(gsb_side);
+  if (side_manager.to_size_t() >= port_lookup_[x][y].size()) {
+    port_lookup_[x][y].resize(side_manager.to_size_t());
+  }
+  /* Resize [node_type] in fast look-up upon needs */
+  if ((size_t)node_type >= port_lookup_[x][y][side_manager.to_size_t()].size()) {
+    port_lookup_[x][y][side_manager.to_size_t()].resize((size_t)node_type);
+  }
+  /* Resize [index] in fast look-up upon needs */
+  if (index >= port_lookup_[x][y][side_manager.to_size_t()][(size_t)node_type].size()) {
+    port_lookup_[x][y][side_manager.to_size_t()][(size_t)node_type].resize(index);
+  }
+  return;
+} 
+
+void RRGraphGSB::resize_lookup_upon_need(const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side,
+                                         const t_rr_type& node_type, const size_t& index) {
+  resize_node_lookup_upon_need(gsb_coordinator, gsb_side, node_type, index);
+  resize_port_lookup_upon_need(gsb_coordinator, gsb_side, node_type, index);
+  return;
+}
+
 void RRGraphGSB::invalidate_fast_node_lookup() const {
   node_lookup_.clear();
+  return;
 }
+
+void RRGraphGSB::invalidate_fast_port_lookup() const {
+  port_lookup_.clear();
+  return;
+}
+
+void RRGraphGSB::invalidate_fast_lookup() const {
+  invalidate_fast_node_lookup();
+  invalidate_fast_port_lookup();
+  return;
+}
+
+/************************************************************************
+ * Validate/Invalidate the fast look-up for the GSB
+ ************************************************************************/
 
 bool RRGraphGSB::valid_fast_node_lookup() const {
   return !node_lookup_.empty();
