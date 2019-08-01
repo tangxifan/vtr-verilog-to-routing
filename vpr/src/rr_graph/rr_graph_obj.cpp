@@ -1,7 +1,44 @@
-/*
- * Member Functions of rr_node,
+/**********************************************************
+ * MIT License
+ *
+ * Copyright (c) 2018 LNIS - The University of Utah
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ ***********************************************************************/
+
+/************************************************************************
+ * Filename:    rr_graph_obj.cpp
+ * Created by:   Xifan Tang
+ * Change history:
+ * +---------------------------------------------------------+
+ * |  Date       |    Author     | Notes
+ * +---------------------------------------------------------+
+ * | 2017/11/21  |  Kevin Murray | Created as a prototype 
+ * +---------------------------------------------------------+
+ * | 2019/07/31  |  Xifan Tang   | Complete an alpha version
+ * +---------------------------------------------------------+
+ ***********************************************************************/
+
+/************************************************************************
+ * Member Functions of RRGraph
  * include mutators, accessors and utility functions 
- */
+ ***********************************************************************/
 #include <cmath>
 #include <algorithm>
 #include <map>
@@ -70,6 +107,56 @@ short RRGraph::node_length(RRNodeId node) const {
 vtr::Rect<short> RRGraph::node_bounding_box(RRNodeId node) const {
   VTR_ASSERT_SAFE(valid_node_id(node));
   return node_bounding_boxes_[node];
+}
+
+/* Node starting and ending points */
+/************************************************************************
+ * Get the coordinator of a starting point of a routing track 
+ * For routing tracks in INC_DIRECTION
+ * (xlow, ylow) should be the starting point 
+ *
+ * For routing tracks in DEC_DIRECTION
+ * (xhigh, yhigh) should be the starting point 
+ ***********************************************************************/
+
+DeviceCoordinator RRGraph::node_start_coordinator(RRNodeId node) const {
+  /* Make sure we have CHANX or CHANY */
+  VTR_ASSERT ( (CHANX == node_type(node)) ||(CHANY == node_type(node)) );
+ 
+  DeviceCoordinator start_coordinator;
+
+  if (INC_DIRECTION == node_direction(node)) {
+    start_coordinator.set(node_xlow(node), node_ylow(node));
+  } else {
+    VTR_ASSERT (DEC_DIRECTION == node_direction(node));
+    start_coordinator.set(node_xhigh(node), node_yhigh(node));
+  }
+
+  return start_coordinator;
+}
+
+/************************************************************************
+ * Get the coordinator of a end point of a routing track 
+ * For routing tracks in INC_DIRECTION
+ * (xhigh, yhigh) should be the ending point 
+ *
+ * For routing tracks in DEC_DIRECTION
+ * (xlow, ylow) should be the ending point 
+ ***********************************************************************/
+DeviceCoordinator RRGraph::node_end_coordinator(RRNodeId node) const {
+  /* Make sure we have CHANX or CHANY */
+  VTR_ASSERT ( (CHANX == node_type(node)) ||(CHANY == node_type(node)) );
+ 
+  DeviceCoordinator end_coordinator;
+
+  if (INC_DIRECTION == node_direction(node)) {
+    end_coordinator.set(node_xhigh(node), node_yhigh(node));
+  } else {
+    VTR_ASSERT (DEC_DIRECTION == node_direction(node));
+    end_coordinator.set(node_xlow(node), node_ylow(node));
+  }
+
+  return end_coordinator;
 }
 
 short RRGraph::node_fan_in(RRNodeId node) const {
@@ -1720,3 +1807,7 @@ void RRGraph::clear() {
 
   return;
 }
+
+/************************************************************
+ * End Of File (EOF)
+ ***********************************************************/

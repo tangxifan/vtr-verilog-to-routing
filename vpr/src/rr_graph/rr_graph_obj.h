@@ -1,3 +1,59 @@
+/**********************************************************
+ * MIT License
+ *
+ * Copyright (c) 2018 LNIS - The University of Utah
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ ***********************************************************************/
+
+/************************************************************************
+ * Filename:    rr_graph_obj.h
+ * Created by:   Xifan Tang
+ * Change history:
+ * +---------------------------------------------------------+
+ * |  Date       |    Author     | Notes
+ * +---------------------------------------------------------+
+ * | 2017/11/21  |  Kevin Murray | Created as a prototype 
+ * +---------------------------------------------------------+
+ * | 2019/07/31  |  Xifan Tang   | Complete an alpha version
+ * +---------------------------------------------------------+
+ ***********************************************************************/
+/************************************************************************
+ * This file introduces a class to model a Routing Resource Graph (RRGraph or RRG) 
+ * which is widely used by placers, routers, analyzers etc.
+ * A Routing Resource Graph (RRGraph or RRG) consists of a number of nodes and edges.
+ *
+ * Each node represents a routing resource, which could be 
+ * 1. a routing track in X-direction or Y-direction (CHANX or CHANY) 
+ * 2. an input or an output of a logic block (IPIN or OPIN) 
+ * 3. a virtual source or sink node (SOURCE or SINK), which are starting/ending points of routing trees.
+ *
+ * Each edge represents a switch between routing resources, which could be
+ * 1. a multiplexer
+ * 2. a tri-state buffer
+ * The switch information are categorized in the rr_switch_inf of RRGraph class.
+ *
+ * IMPORTANT:
+ *   The RRGraph is designed to be a read-only database/graph, once created.
+ *   Placement and routing should not change any attributes of RRGraph.
+ *   Any placement and routing results should be stored in other data structures, such as PlaceContext and RoutingContext. 
+ ***********************************************************************/
 /* IMPORTANT:
  * The following preprocessing flags are added to 
  * avoid compilation error when this headers are included in more than 1 times 
@@ -23,6 +79,7 @@
 
 /* VPR header files go second*/
 #include "vpr_types.h"
+#include "device_coordinator.h"
 #include "rr_graph_fwd.h"
 
 /* Create an alias to the open NodeId
@@ -63,6 +120,9 @@ class RRGraph {
     short node_yhigh(RRNodeId node) const;
     short node_length(RRNodeId node) const;
     vtr::Rect<short> node_bounding_box(RRNodeId node) const;
+    /* Node starting and ending points */
+    DeviceCoordinator node_start_coordinator(RRNodeId node) const;
+    DeviceCoordinator node_end_coordinator(RRNodeId node) const;
 
     short node_capacity(RRNodeId node) const;
     short node_fan_in(RRNodeId node) const;
@@ -249,7 +309,7 @@ class RRGraph {
   private: //Data
 
     //Node related data
-    vtr::vector<RRNodeId,RRNodeId> node_ids_;
+    vtr::vector<RRNodeId,RRNodeId> node_ids_; 
     vtr::vector<RRNodeId,t_rr_type> node_types_;
 
     vtr::vector<RRNodeId,vtr::Rect<short>> node_bounding_boxes_;
@@ -297,3 +357,7 @@ class RRGraph {
 };
 
 #endif
+
+/************************************************************
+ * End Of File (EOF)
+ ***********************************************************/

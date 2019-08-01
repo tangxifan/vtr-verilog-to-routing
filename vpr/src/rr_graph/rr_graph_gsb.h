@@ -171,18 +171,19 @@ class RRGraphGSB {
     std::vector<e_side> get_cb_ipin_sides(const t_rr_type& cb_type) const;
     t_rr_type get_chan_node_type(const e_side& gsb_side) const;
   public: /* Build/Free fast node look-up */
+    void reserve_lookup(const DeviceCoordinator& gsb_coordinator, const size_t& num_sides);
+    void resize_lookup_upon_need(const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side,
+                                 const t_rr_type& node_type, const size_t& index); 
+    void invalidate_fast_lookup() const;
+  private: /* Build/Free fast node look-up */
     void reserve_node_lookup(const DeviceCoordinator& gsb_coordinator, const size_t& num_sides);
     void reserve_port_lookup(const DeviceCoordinator& gsb_coordinator, const size_t& num_sides);
-    void reserve_lookup(const DeviceCoordinator& gsb_coordinator, const size_t& num_sides);
     void resize_node_lookup_upon_need(const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side,
                                       const t_rr_type& node_type, const size_t& index); 
     void resize_port_lookup_upon_need(const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side,
                                       const t_rr_type& node_type, const size_t& index); 
-    void resize_lookup_upon_need(const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side,
-                                 const t_rr_type& node_type, const size_t& index); 
     void invalidate_fast_node_lookup() const;
     void invalidate_fast_port_lookup() const;
-    void invalidate_fast_lookup() const;
   public: /* Validate/Invalidate fast node look-up */
     bool valid_fast_node_lookup() const;
     bool valid_gsb_coordinator(const DeviceCoordinator& gsb_coordinator) const;

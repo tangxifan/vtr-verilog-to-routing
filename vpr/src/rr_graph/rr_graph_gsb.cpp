@@ -315,38 +315,37 @@ bool RRGraphGSB::is_sb_node_passing_wire(const RRGraph& rr_graph, /* Need RRGrap
                                          const DeviceCoordinator& gsb_coordinator, const e_side& gsb_side, 
                                          const size_t& track_id) const {
   /* Get the rr_node */
-  //t_rr_node* track_node = get_chan_node(node_side, track_id);
+  RRNodeId track_node = get_chan_node(gsb_coordinator, gsb_side, track_id);
   /* Get the coordinators */
-  //DeviceCoordinator side_coordinator = get_side_block_coordinator(node_side); 
+  DeviceCoordinator side_coordinator = get_side_block_coordinator(gsb_coordinator, gsb_side); 
 
   /* Get the coordinator of where the track starts */
-  //DeviceCoordinator track_start = get_track_rr_node_start_coordinator(track_node);
+  DeviceCoordinator track_start = rr_graph.node_start_coordinator(track_node);
 
   /* INC_DIRECTION start_track: (xlow, ylow) should be same as the GSB side coordinator */
   /* DEC_DIRECTION start_track: (xhigh, yhigh) should be same as the GSB side coordinator */
-  //if (  (track_start.get_x() == side_coordinator.get_x())
-  //   && (track_start.get_y() == side_coordinator.get_y()) 
-  //   && (OUT_PORT == get_chan_node_direction(node_side, track_id)) ) {
+  if (  (track_start == side_coordinator)
+     && (OUT_PORT == get_chan_node_direction(gsb_coordinator, gsb_side, track_id)) ) {
     /* Double check: start track should be an OUTPUT PORT of the GSB */
-  //  return false; /* This is a starting point */
-  //}
+    return false; /* This is a starting point */
+  }
 
   /* Get the coordinator of where the track ends */
-  //DeviceCoordinator track_end = get_track_rr_node_end_coordinator(track_node);
+  DeviceCoordinator track_end = rr_graph.node_end_coordinator(track_node);
 
   /* INC_DIRECTION end_track: (xhigh, yhigh) should be same as the GSB side coordinator */ 
   /* DEC_DIRECTION end_track: (xlow, ylow) should be same as the GSB side coordinator */ 
-  //if (  (track_end.get_x() == side_coordinator.get_x())
-  //   && (track_end.get_y() == side_coordinator.get_y()) 
-  //   && (IN_PORT == get_chan_node_direction(node_side, track_id)) ) {
+  if (  (track_end == side_coordinator)
+     && (IN_PORT == get_chan_node_direction(gsb_coordinator, gsb_side, track_id)) ) {
     /* Double check: end track should be an INPUT PORT of the GSB */
-  //  return false; /* This is an ending point */
-  //}
+    return false; /* This is an ending point */
+  }
 
   /* Reach here it means that this will be a passing wire, 
    * we should be able to find the node on the opposite side of the GSB!
    */
-  //assert (true == is_sb_node_exist_opposite_side(gsb_coordinator, gsb_side, track_node, node_side));
+  VTR_ASSERT_SAFE (true == is_sb_node_exist_opposite_side(gsb_coordinator, gsb_side, 
+                                                          rr_graph.node_type(track_node), track_node));
 
   return true;
 }
