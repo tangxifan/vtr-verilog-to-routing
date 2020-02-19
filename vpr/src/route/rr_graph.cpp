@@ -51,10 +51,10 @@ struct t_mux_size_distribution {
 };
 
 struct t_clb_to_clb_directs {
-    t_logical_block_type_ptr from_clb_type;
+    t_physical_tile_type_ptr from_clb_type;
     int from_clb_pin_start_index;
     int from_clb_pin_end_index;
-    t_logical_block_type_ptr to_clb_type;
+    t_physical_tile_type_ptr to_clb_type;
     int to_clb_pin_start_index;
     int to_clb_pin_end_index;
     int switch_index; //The switch type used by this direct connection
@@ -148,32 +148,32 @@ static int get_opin_direct_connecions(int x,
                                       const int num_directs,
                                       const t_clb_to_clb_directs* clb_to_clb_directs);
 
-static void alloc_and_load_rr_graph(const int num_nodes,
-                                    std::vector<t_rr_node>& L_rr_node,
-                                    const int num_seg_types,
-                                    const t_chan_details& chan_details_x,
-                                    const t_chan_details& chan_details_y,
-                                    const t_track_to_pin_lookup& track_to_pin_lookup,
-                                    const t_pin_to_track_lookup& opin_to_track_map,
-                                    const vtr::NdMatrix<std::vector<int>, 3>& switch_block_conn,
-                                    t_sb_connection_map* sb_conn_map,
-                                    const DeviceGrid& grid,
-                                    const int Fs,
-                                    t_sblock_pattern& sblock_pattern,
-                                    const std::vector<vtr::Matrix<int>>& Fc_out,
-                                    vtr::NdMatrix<int, 3>& Fc_xofs,
-                                    vtr::NdMatrix<int, 3>& Fc_yofs,
-                                    const t_rr_node_indices& L_rr_node_indices,
-                                    const int max_chan_width,
-                                    const t_chan_width& chan_width,
-                                    const int wire_to_ipin_switch,
-                                    const int delayless_switch,
-                                    const enum e_directionality directionality,
-                                    bool* Fc_clipped,
-                                    const t_direct_inf* directs,
-                                    const int num_directs,
-                                    const t_clb_to_clb_directs* clb_to_clb_directs,
-                                    bool is_global_graph);
+static std::function<void(t_chan_width*)> alloc_and_load_rr_graph(std::vector<t_rr_node>& L_rr_node,
+                                                                  const int num_seg_types,
+                                                                  const t_chan_details& chan_details_x,
+                                                                  const t_chan_details& chan_details_y,
+                                                                  const t_track_to_pin_lookup& track_to_pin_lookup,
+                                                                  const t_pin_to_track_lookup& opin_to_track_map,
+                                                                  const vtr::NdMatrix<std::vector<int>, 3>& switch_block_conn,
+                                                                  t_sb_connection_map* sb_conn_map,
+                                                                  const DeviceGrid& grid,
+                                                                  const int Fs,
+                                                                  t_sblock_pattern& sblock_pattern,
+                                                                  const std::vector<vtr::Matrix<int>>& Fc_out,
+                                                                  vtr::NdMatrix<int, 3>& Fc_xofs,
+                                                                  vtr::NdMatrix<int, 3>& Fc_yofs,
+                                                                  const t_rr_node_indices& L_rr_node_indices,
+                                                                  const int max_chan_width,
+                                                                  const t_chan_width& chan_width,
+                                                                  const int wire_to_ipin_switch,
+                                                                  const int delayless_switch,
+                                                                  const enum e_directionality directionality,
+                                                                  bool* Fc_clipped,
+                                                                  const t_direct_inf* directs,
+                                                                  const int num_directs,
+                                                                  const t_clb_to_clb_directs* clb_to_clb_directs,
+                                                                  bool is_global_graph,
+                                                                  const enum e_clock_modeling clock_modeling);
 
 static float pattern_fmod(float a, float b);
 static void load_uniform_connection_block_pattern(vtr::NdMatrix<int, 5>& tracks_connected_to_pin,
@@ -296,6 +296,7 @@ static void build_rr_graph(const t_graph_type graph_type,
                            const float R_minW_nmos,
                            const float R_minW_pmos,
                            const enum e_base_cost_type base_cost_type,
+                           const enum e_clock_modeling clock_modeling,
                            const bool trim_empty_channels,
                            const bool trim_obs_channels,
                            const t_direct_inf* directs,
@@ -330,7 +331,9 @@ void create_rr_graph(const t_graph_type graph_type,
                          segment_inf,
                          base_cost_type,
                          &det_routing_arch->wire_to_rr_ipin_switch,
-                         det_routing_arch->read_rr_graph_filename.c_str());
+                         det_routing_arch->read_rr_graph_filename.c_str(),
+                         /*read_edge_metadata=*/true,
+                         /*do_check_rr_graph=*/true);
         }
     } else {
         if (channel_widths_unchanged(device_ctx.chan_width, nodes_per_chan) && !device_ctx.rr_nodes.empty()) {
@@ -356,19 +359,12 @@ void create_rr_graph(const t_graph_type graph_type,
                        det_routing_arch->R_minW_nmos,
                        det_routing_arch->R_minW_pmos,
                        base_cost_type,
+                       clock_modeling,
                        trim_empty_channels,
                        trim_obs_channels,
                        directs, num_directs,
                        &det_routing_arch->wire_to_rr_ipin_switch,
                        Warnings);
-
-        if (clock_modeling == DEDICATED_NETWORK) {
-            ClockRRGraphBuilder::create_and_append_clock_rr_graph(segment_inf,
-                                                                  det_routing_arch->R_minW_nmos,
-                                                                  det_routing_arch->R_minW_pmos,
-                                                                  det_routing_arch->wire_to_rr_ipin_switch,
-                                                                  base_cost_type);
-        }
     }
 
     process_non_config_sets();
@@ -422,6 +418,7 @@ static void build_rr_graph(const t_graph_type graph_type,
                            const float R_minW_nmos,
                            const float R_minW_pmos,
                            const enum e_base_cost_type base_cost_type,
+                           const enum e_clock_modeling clock_modeling,
                            const bool trim_empty_channels,
                            const bool trim_obs_channels,
                            const t_direct_inf* directs,
@@ -520,7 +517,7 @@ static void build_rr_graph(const t_graph_type graph_type,
         VTR_ASSERT(max_chan_width % 2 == 0);
         total_sets /= 2;
     }
-    int* sets_per_seg_type = get_seg_track_counts(total_sets, segment_inf, use_full_seg_groups);
+    auto sets_per_seg_type = get_seg_track_counts(total_sets, segment_inf, use_full_seg_groups);
 
     if (is_global_graph) {
         //All pins can connect during global routing
@@ -529,13 +526,13 @@ static void build_rr_graph(const t_graph_type graph_type,
         Fc_out = std::vector<vtr::Matrix<int>>(types.size(), ones);
     } else {
         bool Fc_clipped = false;
-        Fc_in = alloc_and_load_actual_fc(types, max_pins, segment_inf, sets_per_seg_type, max_chan_width,
+        Fc_in = alloc_and_load_actual_fc(types, max_pins, segment_inf, sets_per_seg_type.get(), max_chan_width,
                                          e_fc_type::IN, directionality, &Fc_clipped);
         if (Fc_clipped) {
             *Warnings |= RR_GRAPH_WARN_FC_CLIPPED;
         }
         Fc_clipped = false;
-        Fc_out = alloc_and_load_actual_fc(types, max_pins, segment_inf, sets_per_seg_type, max_chan_width,
+        Fc_out = alloc_and_load_actual_fc(types, max_pins, segment_inf, sets_per_seg_type.get(), max_chan_width,
                                           e_fc_type::OUT, directionality, &Fc_clipped);
         if (Fc_clipped) {
             *Warnings |= RR_GRAPH_WARN_FC_CLIPPED;
@@ -571,7 +568,7 @@ static void build_rr_graph(const t_graph_type graph_type,
     }
 
     auto perturb_ipins = alloc_and_load_perturb_ipins(types.size(), segment_inf.size(),
-                                                      sets_per_seg_type, Fc_in, Fc_out, directionality);
+                                                      sets_per_seg_type.get(), Fc_in, Fc_out, directionality);
     /* END FC */
 
     /* Alloc node lookups, count nodes, alloc rr nodes */
@@ -579,6 +576,11 @@ static void build_rr_graph(const t_graph_type graph_type,
 
     device_ctx.rr_node_indices = alloc_and_load_rr_node_indices(max_chan_width, grid,
                                                                 &num_rr_nodes, chan_details_x, chan_details_y);
+    size_t expected_node_count = num_rr_nodes;
+    if (clock_modeling == DEDICATED_NETWORK) {
+        expected_node_count += ClockRRGraphBuilder::estimate_additional_nodes(grid);
+        device_ctx.rr_nodes.reserve(expected_node_count);
+    }
     device_ctx.rr_nodes.resize(num_rr_nodes);
 
     /* These are data structures used by the the unidir opin mapping. They are used
@@ -655,7 +657,7 @@ static void build_rr_graph(const t_graph_type graph_type,
     for (unsigned int itype = 0; itype < types.size(); ++itype) {
         ipin_to_track_map[itype] = alloc_and_load_pin_to_track_map(RECEIVER,
                                                                    Fc_in[itype], &types[itype], perturb_ipins[itype], directionality,
-                                                                   segment_inf.size(), sets_per_seg_type);
+                                                                   segment_inf.size(), sets_per_seg_type.get());
 
         track_to_pin_lookup[itype] = alloc_and_load_track_to_pin_lookup(ipin_to_track_map[itype], Fc_in[itype], types[itype].width, types[itype].height,
                                                                         types[itype].num_pins, max_chan_width, segment_inf.size());
@@ -672,29 +674,40 @@ static void build_rr_graph(const t_graph_type graph_type,
                                                               max_chan_width, segment_inf);
             opin_to_track_map[itype] = alloc_and_load_pin_to_track_map(DRIVER,
                                                                        Fc_out[itype], &types[itype], perturb_opins, directionality,
-                                                                       segment_inf.size(), sets_per_seg_type);
+                                                                       segment_inf.size(), sets_per_seg_type.get());
         }
     }
     /* END OPIN MAP */
 
     bool Fc_clipped = false;
-    alloc_and_load_rr_graph(device_ctx.rr_nodes.size(), device_ctx.rr_nodes, segment_inf.size(),
-                            chan_details_x, chan_details_y,
-                            track_to_pin_lookup, opin_to_track_map,
-                            switch_block_conn, sb_conn_map, grid, Fs, unidir_sb_pattern,
-                            Fc_out, Fc_xofs, Fc_yofs, device_ctx.rr_node_indices,
-                            max_chan_width,
-                            nodes_per_chan,
-                            wire_to_arch_ipin_switch,
-                            delayless_switch,
-                            directionality,
-                            &Fc_clipped,
-                            directs, num_directs, clb_to_clb_directs,
-                            is_global_graph);
+    auto update_chan_width = alloc_and_load_rr_graph(
+        device_ctx.rr_nodes, segment_inf.size(),
+        chan_details_x, chan_details_y,
+        track_to_pin_lookup, opin_to_track_map,
+        switch_block_conn, sb_conn_map, grid, Fs, unidir_sb_pattern,
+        Fc_out, Fc_xofs, Fc_yofs, device_ctx.rr_node_indices,
+        max_chan_width,
+        nodes_per_chan,
+        wire_to_arch_ipin_switch,
+        delayless_switch,
+        directionality,
+        &Fc_clipped,
+        directs, num_directs, clb_to_clb_directs,
+        is_global_graph,
+        clock_modeling);
+
+    // Verify no incremental node allocation.
+    if (device_ctx.rr_nodes.size() > expected_node_count) {
+        VTR_LOG_ERROR("Expected no more than %zu nodes, have %zu nodes",
+                      expected_node_count, device_ctx.rr_nodes.size());
+    }
 
     /* Update rr_nodes capacities if global routing */
     if (graph_type == GRAPH_GLOBAL) {
-        for (size_t i = 0; i < device_ctx.rr_nodes.size(); i++) {
+        // Using num_rr_nodes here over device_ctx.rr_nodes.size() because
+        // clock_modeling::DEDICATED_NETWORK will append some rr nodes after
+        // the regular graph.
+        for (int i = 0; i < num_rr_nodes; i++) {
             if (device_ctx.rr_nodes[i].type() == CHANX) {
                 int ylow = device_ctx.rr_nodes[i].ylow();
                 device_ctx.rr_nodes[i].set_capacity(nodes_per_chan.x_list[ylow]);
@@ -706,13 +719,15 @@ static void build_rr_graph(const t_graph_type graph_type,
         }
     }
 
+    update_chan_width(&nodes_per_chan);
+
     /* Allocate and load routing resource switches, which are derived from the switches from the architecture file,
      * based on their fanin in the rr graph. This routine also adjusts the rr nodes to point to these new rr switches */
     alloc_and_load_rr_switch_inf(num_arch_switches, R_minW_nmos, R_minW_pmos, wire_to_arch_ipin_switch, wire_to_rr_ipin_switch);
 
     //Partition the rr graph edges for efficient access to configurable/non-configurable
     //edge subsets. Must be done after RR switches have been allocated
-    partition_rr_graph_edges(device_ctx);
+    partition_rr_graph_edges(&device_ctx.rr_nodes);
 
     //Save the channel widths for the newly constructed graph
     device_ctx.chan_width = nodes_per_chan;
@@ -733,10 +748,6 @@ static void build_rr_graph(const t_graph_type graph_type,
     if (sb_conn_map) {
         free_switchblock_permutations(sb_conn_map);
         sb_conn_map = nullptr;
-    }
-    if (sets_per_seg_type) {
-        free(sets_per_seg_type);
-        sets_per_seg_type = nullptr;
     }
 
     free_type_track_to_pin_map(track_to_pin_lookup, types, max_chan_width);
@@ -1172,32 +1183,32 @@ static void free_type_track_to_pin_map(t_track_to_pin_lookup& track_to_pin_map,
 
 /* Does the actual work of allocating the rr_graph and filling all the *
  * appropriate values.  Everything up to this was just a prelude!      */
-static void alloc_and_load_rr_graph(const int num_nodes,
-                                    std::vector<t_rr_node>& L_rr_node,
-                                    const int num_seg_types,
-                                    const t_chan_details& chan_details_x,
-                                    const t_chan_details& chan_details_y,
-                                    const t_track_to_pin_lookup& track_to_pin_lookup,
-                                    const t_pin_to_track_lookup& opin_to_track_map,
-                                    const vtr::NdMatrix<std::vector<int>, 3>& switch_block_conn,
-                                    t_sb_connection_map* sb_conn_map,
-                                    const DeviceGrid& grid,
-                                    const int Fs,
-                                    t_sblock_pattern& sblock_pattern,
-                                    const std::vector<vtr::Matrix<int>>& Fc_out,
-                                    vtr::NdMatrix<int, 3>& Fc_xofs,
-                                    vtr::NdMatrix<int, 3>& Fc_yofs,
-                                    const t_rr_node_indices& L_rr_node_indices,
-                                    const int max_chan_width,
-                                    const t_chan_width& chan_width,
-                                    const int wire_to_ipin_switch,
-                                    const int delayless_switch,
-                                    const enum e_directionality directionality,
-                                    bool* Fc_clipped,
-                                    const t_direct_inf* directs,
-                                    const int num_directs,
-                                    const t_clb_to_clb_directs* clb_to_clb_directs,
-                                    bool is_global_graph) {
+static std::function<void(t_chan_width*)> alloc_and_load_rr_graph(std::vector<t_rr_node>& L_rr_node,
+                                                                  const int num_seg_types,
+                                                                  const t_chan_details& chan_details_x,
+                                                                  const t_chan_details& chan_details_y,
+                                                                  const t_track_to_pin_lookup& track_to_pin_lookup,
+                                                                  const t_pin_to_track_lookup& opin_to_track_map,
+                                                                  const vtr::NdMatrix<std::vector<int>, 3>& switch_block_conn,
+                                                                  t_sb_connection_map* sb_conn_map,
+                                                                  const DeviceGrid& grid,
+                                                                  const int Fs,
+                                                                  t_sblock_pattern& sblock_pattern,
+                                                                  const std::vector<vtr::Matrix<int>>& Fc_out,
+                                                                  vtr::NdMatrix<int, 3>& Fc_xofs,
+                                                                  vtr::NdMatrix<int, 3>& Fc_yofs,
+                                                                  const t_rr_node_indices& L_rr_node_indices,
+                                                                  const int max_chan_width,
+                                                                  const t_chan_width& chan_width,
+                                                                  const int wire_to_ipin_switch,
+                                                                  const int delayless_switch,
+                                                                  const enum e_directionality directionality,
+                                                                  bool* Fc_clipped,
+                                                                  const t_direct_inf* directs,
+                                                                  const int num_directs,
+                                                                  const t_clb_to_clb_directs* clb_to_clb_directs,
+                                                                  bool is_global_graph,
+                                                                  const enum e_clock_modeling clock_modeling) {
     //We take special care when creating RR graph edges (there are typically many more
     //edges than nodes in an RR graph).
     //
@@ -1295,7 +1306,25 @@ static void alloc_and_load_rr_graph(const int num_nodes,
         }
     }
 
-    init_fan_in(L_rr_node, num_nodes);
+    std::function<void(t_chan_width*)> update_chan_width = [](t_chan_width*) {
+    };
+    if (clock_modeling == DEDICATED_NETWORK) {
+        ClockRRGraphBuilder builder(
+            chan_width, grid, &L_rr_node);
+        builder.create_and_append_clock_rr_graph(
+            num_seg_types,
+            &rr_edges_to_create);
+        uniquify_edges(rr_edges_to_create);
+        alloc_and_load_edges(L_rr_node, rr_edges_to_create);
+        rr_edges_to_create.clear();
+        update_chan_width = [builder](t_chan_width* c) {
+            builder.update_chan_width(c);
+        };
+    }
+
+    init_fan_in(L_rr_node, L_rr_node.size());
+
+    return update_chan_width;
 }
 
 static void build_bidir_rr_opins(const int i,
@@ -1374,11 +1403,11 @@ void free_rr_graph() {
 
     device_ctx.read_rr_graph_filename.clear();
 
-    device_ctx.rr_node_indices.clear();
+    for (auto& data : device_ctx.rr_node_indices) {
+        data.clear();
+    }
 
     device_ctx.rr_nodes.clear();
-
-    device_ctx.rr_node_indices.clear();
 
     device_ctx.rr_indexed_data.clear();
 
@@ -2654,94 +2683,107 @@ static void build_unidir_rr_opins(const int i, const int j, const e_side side, c
  * TODO: The function that does this parsing in placement is poorly done because it lacks generality on heterogeniety, should replace with this one
  */
 static t_clb_to_clb_directs* alloc_and_load_clb_to_clb_directs(const t_direct_inf* directs, const int num_directs, int delayless_switch) {
-    int i, j;
-    unsigned int itype;
+    int i;
     t_clb_to_clb_directs* clb_to_clb_directs;
-    char *pb_type_name, *port_name;
+    char *tile_name, *port_name;
     int start_pin_index, end_pin_index;
-    t_pb_type* pb_type;
+    t_physical_tile_type_ptr physical_tile = nullptr;
+    t_physical_tile_port tile_port;
 
     auto& device_ctx = g_vpr_ctx.device();
 
     clb_to_clb_directs = (t_clb_to_clb_directs*)vtr::calloc(num_directs, sizeof(t_clb_to_clb_directs));
 
-    pb_type_name = nullptr;
+    tile_name = nullptr;
     port_name = nullptr;
 
     for (i = 0; i < num_directs; i++) {
-        pb_type_name = (char*)vtr::malloc((strlen(directs[i].from_pin) + strlen(directs[i].to_pin)) * sizeof(char));
+        tile_name = (char*)vtr::malloc((strlen(directs[i].from_pin) + strlen(directs[i].to_pin)) * sizeof(char));
         port_name = (char*)vtr::malloc((strlen(directs[i].from_pin) + strlen(directs[i].to_pin)) * sizeof(char));
 
         // Load from pins
         // Parse out the pb_type name, port name, and pin range
-        parse_direct_pin_name(directs[i].from_pin, directs[i].line, &start_pin_index, &end_pin_index, pb_type_name, port_name);
+        parse_direct_pin_name(directs[i].from_pin, directs[i].line, &start_pin_index, &end_pin_index, tile_name, port_name);
 
         // Figure out which type, port, and pin is used
-        for (itype = 0; itype < device_ctx.logical_block_types.size(); ++itype) {
-            if (strcmp(device_ctx.logical_block_types[itype].name, pb_type_name) == 0) {
+        for (const auto& type : device_ctx.physical_tile_types) {
+            if (strcmp(type.name, tile_name) == 0) {
+                physical_tile = &type;
                 break;
             }
         }
 
-        if (itype >= device_ctx.logical_block_types.size()) {
-            vpr_throw(VPR_ERROR_ARCH, get_arch_file_name(), directs[i].line, "Unable to find block %s.\n", pb_type_name);
+        if (physical_tile == nullptr) {
+            VPR_THROW(VPR_ERROR_ARCH, "Unable to find block %s.\n", tile_name);
         }
 
-        clb_to_clb_directs[i].from_clb_type = &device_ctx.logical_block_types[itype];
-        pb_type = clb_to_clb_directs[i].from_clb_type->pb_type;
+        clb_to_clb_directs[i].from_clb_type = physical_tile;
 
-        for (j = 0; j < pb_type->num_ports; j++) {
-            if (strcmp(pb_type->ports[j].name, port_name) == 0) {
+        bool port_found = false;
+        for (const auto& port : physical_tile->ports) {
+            if (0 == strcmp(port.name, port_name)) {
+                tile_port = port;
+                port_found = true;
                 break;
             }
         }
-        if (j >= pb_type->num_ports) {
-            vpr_throw(VPR_ERROR_ARCH, get_arch_file_name(), directs[i].line, "Unable to find port %s (on block %s).\n", port_name, pb_type_name);
+
+        if (!port_found) {
+            VPR_THROW(VPR_ERROR_ARCH, "Unable to find port %s (on block %s).\n", port_name, tile_name);
         }
 
         if (start_pin_index == OPEN) {
             VTR_ASSERT(start_pin_index == end_pin_index);
             start_pin_index = 0;
-            end_pin_index = pb_type->ports[j].num_pins - 1;
+            end_pin_index = tile_port.num_pins - 1;
         }
-        get_blk_pin_from_port_pin(clb_to_clb_directs[i].from_clb_type->index, j, start_pin_index, &clb_to_clb_directs[i].from_clb_pin_start_index);
-        get_blk_pin_from_port_pin(clb_to_clb_directs[i].from_clb_type->index, j, end_pin_index, &clb_to_clb_directs[i].from_clb_pin_end_index);
+
+        // Add clb directs start/end pin indices based on the absolute pin position
+        // of the port defined in the direct connection. The CLB is the source one.
+        clb_to_clb_directs[i].from_clb_pin_start_index = tile_port.absolute_first_pin_index + start_pin_index;
+        clb_to_clb_directs[i].from_clb_pin_end_index = tile_port.absolute_first_pin_index + end_pin_index;
 
         // Load to pins
         // Parse out the pb_type name, port name, and pin range
-        parse_direct_pin_name(directs[i].to_pin, directs[i].line, &start_pin_index, &end_pin_index, pb_type_name, port_name);
+        parse_direct_pin_name(directs[i].to_pin, directs[i].line, &start_pin_index, &end_pin_index, tile_name, port_name);
 
         // Figure out which type, port, and pin is used
-        for (itype = 0; itype < device_ctx.logical_block_types.size(); ++itype) {
-            if (strcmp(device_ctx.logical_block_types[itype].name, pb_type_name) == 0) {
+        for (const auto& type : device_ctx.physical_tile_types) {
+            if (strcmp(type.name, tile_name) == 0) {
+                physical_tile = &type;
                 break;
             }
         }
 
-        if (itype >= device_ctx.logical_block_types.size()) {
-            vpr_throw(VPR_ERROR_ARCH, get_arch_file_name(), directs[i].line, "Unable to find block %s.\n", pb_type_name);
+        if (physical_tile == nullptr) {
+            VPR_THROW(VPR_ERROR_ARCH, "Unable to find block %s.\n", tile_name);
         }
 
-        clb_to_clb_directs[i].to_clb_type = &device_ctx.logical_block_types[itype];
-        pb_type = clb_to_clb_directs[i].to_clb_type->pb_type;
+        clb_to_clb_directs[i].to_clb_type = physical_tile;
 
-        for (j = 0; j < pb_type->num_ports; j++) {
-            if (strcmp(pb_type->ports[j].name, port_name) == 0) {
+        port_found = false;
+        for (const auto& port : physical_tile->ports) {
+            if (0 == strcmp(port.name, port_name)) {
+                tile_port = port;
+                port_found = true;
                 break;
             }
         }
-        if (j >= pb_type->num_ports) {
-            vpr_throw(VPR_ERROR_ARCH, get_arch_file_name(), directs[i].line, "Unable to find port %s (on block %s).\n", port_name, pb_type_name);
+
+        if (!port_found) {
+            VPR_THROW(VPR_ERROR_ARCH, "Unable to find port %s (on block %s).\n", port_name, tile_name);
         }
 
         if (start_pin_index == OPEN) {
             VTR_ASSERT(start_pin_index == end_pin_index);
             start_pin_index = 0;
-            end_pin_index = pb_type->ports[j].num_pins - 1;
+            end_pin_index = tile_port.num_pins - 1;
         }
 
-        get_blk_pin_from_port_pin(clb_to_clb_directs[i].to_clb_type->index, j, start_pin_index, &clb_to_clb_directs[i].to_clb_pin_start_index);
-        get_blk_pin_from_port_pin(clb_to_clb_directs[i].to_clb_type->index, j, end_pin_index, &clb_to_clb_directs[i].to_clb_pin_end_index);
+        // Add clb directs start/end pin indices based on the absolute pin position
+        // of the port defined in the direct connection. The CLB is the destination one.
+        clb_to_clb_directs[i].to_clb_pin_start_index = tile_port.absolute_first_pin_index + start_pin_index;
+        clb_to_clb_directs[i].to_clb_pin_end_index = tile_port.absolute_first_pin_index + end_pin_index;
 
         if (abs(clb_to_clb_directs[i].from_clb_pin_start_index - clb_to_clb_directs[i].from_clb_pin_end_index) != abs(clb_to_clb_directs[i].to_clb_pin_start_index - clb_to_clb_directs[i].to_clb_pin_end_index)) {
             vpr_throw(VPR_ERROR_ARCH, get_arch_file_name(), directs[i].line,
@@ -2756,7 +2798,7 @@ static t_clb_to_clb_directs* alloc_and_load_clb_to_clb_directs(const t_direct_in
             //Use the delayless switch by default
             clb_to_clb_directs[i].switch_index = delayless_switch;
         }
-        free(pb_type_name);
+        free(tile_name);
         free(port_name);
 
         //We must be careful to clean-up anything that we may have incidentally allocated.
@@ -2804,7 +2846,7 @@ static int get_opin_direct_connecions(int x,
     /* Iterate through all direct connections */
     for (int i = 0; i < num_directs; i++) {
         /* Find matching direct clb-to-clb connections with the same type as current grid location */
-        if (clb_to_clb_directs[i].from_clb_type == logical_block_type(curr_type)) { //We are at a valid starting point
+        if (clb_to_clb_directs[i].from_clb_type == curr_type) { //We are at a valid starting point
 
             if (directs[i].from_side != NUM_SIDES && directs[i].from_side != side) continue;
 
@@ -2815,7 +2857,7 @@ static int get_opin_direct_connecions(int x,
                 && y + directs[i].y_offset > 0) {
                 //Only add connections if the target clb type matches the type in the direct specification
                 t_physical_tile_type_ptr target_type = device_ctx.grid[x + directs[i].x_offset][y + directs[i].y_offset].type;
-                if (clb_to_clb_directs[i].to_clb_type == logical_block_type(target_type)
+                if (clb_to_clb_directs[i].to_clb_type == target_type
                     && z + directs[i].z_offset < int(target_type->capacity)
                     && z + directs[i].z_offset >= 0) {
                     /* Compute index of opin with regards to given pins */

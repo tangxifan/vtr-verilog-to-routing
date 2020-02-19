@@ -42,9 +42,7 @@ void check_route(enum e_route_type route_type) {
     int max_pins, inode, prev_node;
     unsigned int ipin;
     bool valid, connects;
-    bool* connected_to_route; /* [0 .. device_ctx.rr_nodes.size()-1] */
     t_trace* tptr;
-    bool* pin_done;
 
     auto& device_ctx = g_vpr_ctx.device();
     auto& cluster_ctx = g_vpr_ctx.clustering();
@@ -70,21 +68,21 @@ void check_route(enum e_route_type route_type) {
 
     auto non_configurable_rr_sets = identify_non_configurable_rr_sets();
 
-    connected_to_route = (bool*)vtr::calloc(device_ctx.rr_nodes.size(), sizeof(bool));
+    auto connected_to_route = std::make_unique<bool[]>(device_ctx.rr_nodes.size());
+    std::fill_n(connected_to_route.get(), device_ctx.rr_nodes.size(), false);
 
     max_pins = 0;
     for (auto net_id : cluster_ctx.clb_nlist.nets())
         max_pins = std::max(max_pins, (int)cluster_ctx.clb_nlist.net_pins(net_id).size());
 
-    pin_done = (bool*)vtr::malloc(max_pins * sizeof(bool));
+    auto pin_done = std::make_unique<bool[]>(max_pins);
 
     /* Now check that all nets are indeed connected. */
     for (auto net_id : cluster_ctx.clb_nlist.nets()) {
         if (cluster_ctx.clb_nlist.net_is_ignored(net_id) || cluster_ctx.clb_nlist.net_sinks(net_id).size() == 0) /* Skip ignored nets. */
             continue;
 
-        for (ipin = 0; ipin < cluster_ctx.clb_nlist.net_pins(net_id).size(); ipin++)
-            pin_done[ipin] = false;
+        std::fill_n(pin_done.get(), cluster_ctx.clb_nlist.net_pins(net_id).size(), false);
 
         /* Check the SOURCE of the net. */
         tptr = route_ctx.trace[net_id].head;
@@ -132,7 +130,7 @@ void check_route(enum e_route_type route_type) {
                 connected_to_route[inode] = true; /* Mark as in path. */
 
                 if (device_ctx.rr_nodes[inode].type() == SINK) {
-                    check_sink(inode, net_id, pin_done);
+                    check_sink(inode, net_id, pin_done.get());
                     num_sinks += 1;
                 }
 
@@ -160,12 +158,10 @@ void check_route(enum e_route_type route_type) {
 
         check_net_for_stubs(net_id);
 
-        reset_flags(net_id, connected_to_route);
+        reset_flags(net_id, connected_to_route.get());
 
     } /* End for each net */
 
-    free(pin_done);
-    free(connected_to_route);
     VTR_LOG("Completed routing consistency check successfully.\n");
     VTR_LOG("\n");
 }
@@ -173,29 +169,25 @@ void check_route(enum e_route_type route_type) {
 /* Checks that this SINK node is one of the terminals of inet, and marks   *
  * the appropriate pin as being reached.                                   */
 static void check_sink(int inode, ClusterNetId net_id, bool* pin_done) {
-    int i, j, ifound, ptc_num, iclass, iblk, pin_index;
-    ClusterBlockId bnum;
-    unsigned int ipin;
-    t_physical_tile_type_ptr type;
     auto& device_ctx = g_vpr_ctx.device();
     auto& cluster_ctx = g_vpr_ctx.clustering();
     auto& place_ctx = g_vpr_ctx.placement();
 
     VTR_ASSERT(device_ctx.rr_nodes[inode].type() == SINK);
-    i = device_ctx.rr_nodes[inode].xlow();
-    j = device_ctx.rr_nodes[inode].ylow();
-    type = device_ctx.grid[i][j].type;
+    int i = device_ctx.rr_nodes[inode].xlow();
+    int j = device_ctx.rr_nodes[inode].ylow();
+    auto type = device_ctx.grid[i][j].type;
     /* For sinks, ptc_num is the class */
-    ptc_num = device_ctx.rr_nodes[inode].ptc_num();
-    ifound = 0;
+    int ptc_num = device_ctx.rr_nodes[inode].ptc_num();
+    int ifound = 0;
 
-    for (iblk = 0; iblk < type->capacity; iblk++) {
-        bnum = place_ctx.grid_blocks[i][j].blocks[iblk]; /* Hardcoded to one cluster_ctx block*/
-        ipin = 1;
+    for (int iblk = 0; iblk < type->capacity; iblk++) {
+        ClusterBlockId bnum = place_ctx.grid_blocks[i][j].blocks[iblk]; /* Hardcoded to one cluster_ctx block*/
+        unsigned int ipin = 1;
         for (auto pin_id : cluster_ctx.clb_nlist.net_sinks(net_id)) {
             if (cluster_ctx.clb_nlist.pin_block(pin_id) == bnum) {
-                pin_index = cluster_ctx.clb_nlist.pin_physical_index(pin_id);
-                iclass = type->pin_class[pin_index];
+                int pin_index = tile_pin_index(pin_id);
+                int iclass = type->pin_class[pin_index];
                 if (iclass == ptc_num) {
                     /* Could connect to same pin class on the same clb more than once.  Only   *
                      * update pin_done for a pin that hasn't been reached yet.                 */
@@ -225,27 +217,23 @@ static void check_sink(int inode, ClusterNetId net_id, bool* pin_done) {
 
 /* Checks that the node passed in is a valid source for this net. */
 static void check_source(int inode, ClusterNetId net_id) {
-    t_rr_type rr_type;
-    t_physical_tile_type_ptr type;
-    ClusterBlockId blk_id;
-    int i, j, ptc_num, node_block_pin, iclass;
     auto& device_ctx = g_vpr_ctx.device();
     auto& cluster_ctx = g_vpr_ctx.clustering();
     auto& place_ctx = g_vpr_ctx.placement();
 
-    rr_type = device_ctx.rr_nodes[inode].type();
+    t_rr_type rr_type = device_ctx.rr_nodes[inode].type();
     if (rr_type != SOURCE) {
         VPR_FATAL_ERROR(VPR_ERROR_ROUTE,
                         "in check_source: net %d begins with a node of type %d.\n", size_t(net_id), rr_type);
     }
 
-    i = device_ctx.rr_nodes[inode].xlow();
-    j = device_ctx.rr_nodes[inode].ylow();
+    int i = device_ctx.rr_nodes[inode].xlow();
+    int j = device_ctx.rr_nodes[inode].ylow();
     /* for sinks and sources, ptc_num is class */
-    ptc_num = device_ctx.rr_nodes[inode].ptc_num();
+    int ptc_num = device_ctx.rr_nodes[inode].ptc_num();
     /* First node_block for net is the source */
-    blk_id = cluster_ctx.clb_nlist.net_driver_block(net_id);
-    type = device_ctx.grid[i][j].type;
+    ClusterBlockId blk_id = cluster_ctx.clb_nlist.net_driver_block(net_id);
+    auto type = device_ctx.grid[i][j].type;
 
     if (place_ctx.block_locs[blk_id].loc.x != i || place_ctx.block_locs[blk_id].loc.y != j) {
         VPR_FATAL_ERROR(VPR_ERROR_ROUTE,
@@ -253,8 +241,9 @@ static void check_source(int inode, ClusterNetId net_id) {
     }
 
     //Get the driver pin's index in the block
-    node_block_pin = cluster_ctx.clb_nlist.net_pin_physical_index(net_id, 0);
-    iclass = type->pin_class[node_block_pin];
+    auto physical_pin = net_pin_to_tile_pin_index(net_id, 0);
+
+    int iclass = type->pin_class[physical_pin];
 
     if (ptc_num != iclass) {
         VPR_FATAL_ERROR(VPR_ERROR_ROUTE,
@@ -442,7 +431,8 @@ static bool check_adjacent(int from_node, int to_node) {
             } else if (to_type == CHANY) {
                 num_adj += chanx_chany_adjacent(from_node, to_node);
             } else {
-                VTR_ASSERT(0);
+                VPR_FATAL_ERROR(VPR_ERROR_ROUTE,
+                                "in check_adjacent: %d and %d are not adjacent", from_node, to_node);
             }
             break;
 
@@ -473,7 +463,8 @@ static bool check_adjacent(int from_node, int to_node) {
             } else if (to_type == CHANX) {
                 num_adj += chanx_chany_adjacent(to_node, from_node);
             } else {
-                VTR_ASSERT(0);
+                VPR_FATAL_ERROR(VPR_ERROR_ROUTE,
+                                "in check_adjacent: %d and %d are not adjacent", from_node, to_node);
             }
             break;
 
@@ -569,6 +560,7 @@ void recompute_occupancy_from_scratch() {
             /* Will always be 0 for pads or SINK classes. */
             for (ipin = 0; ipin < num_local_opins; ipin++) {
                 inode = route_ctx.clb_opins_used_locally[blk_id][iclass][ipin];
+                VTR_ASSERT(inode >= 0 && inode < (ssize_t)device_ctx.rr_nodes.size());
                 route_ctx.rr_node_route_inf[inode].set_occ(route_ctx.rr_node_route_inf[inode].occ() + 1);
             }
         }

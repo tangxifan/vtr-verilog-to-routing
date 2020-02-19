@@ -32,12 +32,13 @@ std::vector<AtomPortId> find_combinationally_connected_input_ports(const AtomNet
 //Returns the set of clock ports which are combinationally connected to output_port
 std::vector<AtomPortId> find_combinationally_connected_clock_ports(const AtomNetlist& netlist, AtomPortId output_port);
 
-std::vector<AtomBlockId> identify_buffer_luts(const AtomNetlist& netlist);
 bool is_buffer_lut(const AtomNetlist& netlist, const AtomBlockId blk);
 bool is_removable_block(const AtomNetlist& netlist, const AtomBlockId blk, std::string* reason = nullptr);
 bool is_removable_input(const AtomNetlist& netlist, const AtomBlockId blk, std::string* reason = nullptr);
 bool is_removable_output(const AtomNetlist& netlist, const AtomBlockId blk, std::string* reason = nullptr);
-void remove_buffer_lut(AtomNetlist& netlist, AtomBlockId blk, int verbosity);
+
+//Attempts to remove the specified buffer LUT blk from the netlist. Returns true if successful.
+bool remove_buffer_lut(AtomNetlist& netlist, AtomBlockId blk, int verbosity);
 
 std::string make_unconn(size_t& unconn_count, PinType type);
 void cube_to_minterms_recurr(std::vector<vtr::LogicValue> cube, std::vector<size_t>& minterms);
@@ -688,27 +689,19 @@ void absorb_buffer_luts(AtomNetlist& netlist, int verbosity) {
     //we then remove those luts, replacing the net's they drove with the inputs to the
     //buffer lut
 
-    //Find buffer luts
-    auto buffer_luts = identify_buffer_luts(netlist);
-
-    VTR_LOGV(verbosity > 0, "Absorbing %zu LUT buffers\n", buffer_luts.size());
+    size_t removed_buffer_count = 0;
 
     //Remove the buffer luts
-    for (auto blk : buffer_luts) {
-        remove_buffer_lut(netlist, blk, verbosity);
-    }
-
-    //TODO: absorb inverter LUTs?
-}
-
-std::vector<AtomBlockId> identify_buffer_luts(const AtomNetlist& netlist) {
-    std::vector<AtomBlockId> buffer_luts;
     for (auto blk : netlist.blocks()) {
         if (is_buffer_lut(netlist, blk)) {
-            buffer_luts.push_back(blk);
+            if (remove_buffer_lut(netlist, blk, verbosity)) {
+                ++removed_buffer_count;
+            }
         }
     }
-    return buffer_luts;
+    VTR_LOGV(verbosity > 0, "Absorbed %zu LUT buffers\n", removed_buffer_count);
+
+    //TODO: absorb inverter LUTs?
 }
 
 bool is_buffer_lut(const AtomNetlist& netlist, const AtomBlockId blk) {
@@ -772,7 +765,7 @@ bool is_buffer_lut(const AtomNetlist& netlist, const AtomBlockId blk) {
     return false;
 }
 
-void remove_buffer_lut(AtomNetlist& netlist, AtomBlockId blk, int verbosity) {
+bool remove_buffer_lut(AtomNetlist& netlist, AtomBlockId blk, int verbosity) {
     //General net connectivity, numbers equal pin ids
     //
     // 1  in    2 ----- m+1  out
@@ -821,8 +814,16 @@ void remove_buffer_lut(AtomNetlist& netlist, AtomBlockId blk, int verbosity) {
     auto input_net = netlist.pin_net(input_pin);
     auto output_net = netlist.pin_net(output_pin);
 
+    VTR_LOGV_WARN(verbosity > 1, "Attempting to remove buffer '%s' (%s) from net '%s' to net '%s'\n", netlist.block_name(blk).c_str(), netlist.block_model(blk)->name, netlist.net_name(input_net).c_str(), netlist.net_name(output_net).c_str());
+
     //Collect the new driver and sink pins
     AtomPinId new_driver = netlist.net_driver(input_net);
+
+    if (!new_driver) {
+        VTR_LOGV_WARN(verbosity > 2, "Buffer '%s' has no input and will not be absorbed (left to be swept)\n", netlist.block_name(blk).c_str(), netlist.block_model(blk)->name, netlist.net_name(input_net).c_str(), netlist.net_name(output_net).c_str());
+        return false; //Dangling/undriven input, leave buffer to be swept
+    }
+
     VTR_ASSERT(netlist.pin_type(new_driver) == PinType::DRIVER);
 
     std::vector<AtomPinId> new_sinks;
@@ -848,38 +849,35 @@ void remove_buffer_lut(AtomNetlist& netlist, AtomBlockId blk, int verbosity) {
     // Note that the driver can only (potentially) be an INPAD, and the sinks only (potentially) OUTPADs
     AtomBlockType driver_block_type = netlist.block_type(netlist.pin_block(new_driver));
     bool driver_is_pi = (driver_block_type == AtomBlockType::INPAD);
-    bool po_in_sinks = std::any_of(new_sinks.begin(), new_sinks.end(),
-                                   [&](AtomPinId pin_id) {
-                                       VTR_ASSERT(netlist.pin_type(pin_id) == PinType::SINK);
-                                       AtomBlockId blk_id = netlist.pin_block(pin_id);
-                                       return netlist.block_type(blk_id) == AtomBlockType::OUTPAD;
-                                   });
+    bool po_in_input_sinks = std::any_of(input_sinks.begin(), input_sinks.end(),
+                                         [&](AtomPinId pin_id) {
+                                             VTR_ASSERT(netlist.pin_type(pin_id) == PinType::SINK);
+                                             AtomBlockId blk_id = netlist.pin_block(pin_id);
+                                             return netlist.block_type(blk_id) == AtomBlockType::OUTPAD;
+                                         });
+    bool po_in_output_sinks = std::any_of(output_sinks.begin(), output_sinks.end(),
+                                          [&](AtomPinId pin_id) {
+                                              VTR_ASSERT(netlist.pin_type(pin_id) == PinType::SINK);
+                                              AtomBlockId blk_id = netlist.pin_block(pin_id);
+                                              return netlist.block_type(blk_id) == AtomBlockType::OUTPAD;
+                                          });
 
     std::string new_net_name;
-    if (!driver_is_pi && !po_in_sinks) {
-        //No PIs or POs, we can choose arbitarily in this case
-        new_net_name = netlist.net_name(output_net);
 
-    } else if (driver_is_pi && !po_in_sinks) {
-        //Must use the input name to perserve primary-input name
+    if ((driver_is_pi || po_in_input_sinks) && !po_in_output_sinks) {
+        //Must use the input name to perserve primary-input or primary-output name
         new_net_name = netlist.net_name(input_net);
-
-    } else if (!driver_is_pi && po_in_sinks) {
+    } else if (!(driver_is_pi || po_in_input_sinks) && po_in_output_sinks) {
         //Must use the output name to perserve primary-output name
         new_net_name = netlist.net_name(output_net);
-
     } else {
-        VTR_ASSERT(driver_is_pi && po_in_sinks);
-        //This is a buffered connection from a primary input, to primary output
-        //TODO: consider implications of removing these...
-
-        //Do not remove such buffers
-        return;
+        //Arbitrarily merge the net names
+        new_net_name = netlist.net_name(input_net) + "__" + netlist.net_name(output_net);
     }
 
     size_t initial_input_net_pins = netlist.net_pins(input_net).size();
 
-    VTR_LOGV_WARN(verbosity > 1, "%s is a LUT buffer and will be absorbed\n", netlist.block_name(blk).c_str());
+    VTR_LOGV_WARN(verbosity > 2, "%s is a LUT buffer and will be absorbed\n", netlist.block_name(blk).c_str());
 
     //Remove the buffer
     //
@@ -893,7 +891,10 @@ void remove_buffer_lut(AtomNetlist& netlist, AtomBlockId blk, int verbosity) {
     netlist.remove_net(output_net);
 
     //Create the new merged net
-    netlist.add_net(new_net_name, new_driver, new_sinks);
+    AtomNetId new_net = netlist.add_net(new_net_name, new_driver, new_sinks);
+
+    VTR_ASSERT(netlist.net_pins(new_net).size() == initial_input_net_pins - 1 + output_sinks.size());
+    return true;
 }
 
 bool is_removable_block(const AtomNetlist& netlist, const AtomBlockId blk_id, std::string* reason) {
@@ -1474,7 +1475,7 @@ void print_netlist_clock_info(const AtomNetlist& netlist) {
             auto blk_id = netlist.pin_block(pin_id);
             clk_blks.insert(blk_id);
         }
-        VTR_LOG("  Netlist Clock '%s' Fanout: %zu pins (%.1f%), %zu blocks (%.1f%)\n", netlist.net_name(net_id).c_str(), fanout, 100. * float(fanout) / netlist.pins().size(), clk_blks.size(), 100 * float(clk_blks.size()) / netlist.blocks().size());
+        VTR_LOG("  Netlist Clock '%s' Fanout: %zu pins (%.1f%%), %zu blocks (%.1f%%)\n", netlist.net_name(net_id).c_str(), fanout, 100. * float(fanout) / netlist.pins().size(), clk_blks.size(), 100 * float(clk_blks.size()) / netlist.blocks().size());
     }
 }
 

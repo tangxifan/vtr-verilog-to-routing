@@ -44,9 +44,9 @@ struct t_trace_branch {
 
 /**************** Static variables local to route_common.c ******************/
 
-static t_heap** heap; /* Indexed from [1..heap_size] */
-static int heap_size; /* Number of slots in the heap array */
-static int heap_tail; /* Index of first unused slot in the heap array */
+static t_heap** heap = nullptr; /* Indexed from [1..heap_size] */
+static int heap_size;           /* Number of slots in the heap array */
+static int heap_tail;           /* Index of first unused slot in the heap array */
 
 /* For managing my own list of currently free heap data structures.     */
 static t_heap* heap_free_head = nullptr;
@@ -467,14 +467,18 @@ void pathfinder_update_cost(float pres_fac, float acc_fac) {
     }
 }
 
+// Note: malloc()/free() must be used for the heap,
+//       or realloc() must be eliminated from add_to_heap()
+//       because there is no C++ equivalent.
 void init_heap(const DeviceGrid& grid) {
     if (heap != nullptr) {
         vtr::free(heap + 1);
-        heap = nullptr;
     }
+
     heap_size = (grid.width() - 1) * (grid.height() - 1);
-    heap = (t_heap**)vtr::malloc(heap_size * sizeof(t_heap*));
-    heap--; /* heap stores from [1..heap_size] */
+
+    // heap stores from [1..heap_size]
+    heap = (t_heap**)vtr::malloc(heap_size * sizeof(t_heap*)) - 1;
     heap_tail = 1;
 }
 
@@ -799,6 +803,31 @@ void node_to_heap(int inode, float total_cost, int prev_node, int prev_edge, flo
     add_to_heap(hptr);
 }
 
+void drop_traceback_tail(ClusterNetId net_id) {
+    /* Removes the tail node from the routing traceback and updates
+     * it with the previous node from the traceback.
+     * This funtion is primarily called to remove the virtual clock
+     * sink from the routing traceback and replace it with the clock
+     * network root. */
+    auto& route_ctx = g_vpr_ctx.mutable_routing();
+
+    auto* tail_ptr = route_ctx.trace[net_id].tail;
+    auto node = tail_ptr->index;
+    route_ctx.trace_nodes[net_id].erase(node);
+    auto* trace_ptr = route_ctx.trace[net_id].head;
+    while (trace_ptr != nullptr) {
+        t_trace* next_ptr = trace_ptr->next;
+        if (next_ptr == tail_ptr) {
+            trace_ptr->iswitch = tail_ptr->iswitch;
+            trace_ptr->next = nullptr;
+            route_ctx.trace[net_id].tail = trace_ptr;
+            break;
+        }
+        trace_ptr = next_ptr;
+    }
+    free_trace_data(tail_ptr);
+}
+
 void free_traceback(ClusterNetId net_id) {
     /* Puts the entire traceback (old routing) for this net on the free list *
      * and sets the route_ctx.trace_head pointers etc. for the net to NULL.            */
@@ -1009,8 +1038,6 @@ void reset_rr_node_route_structs() {
 static vtr::vector<ClusterNetId, std::vector<int>> load_net_rr_terminals(const t_rr_node_indices& L_rr_node_indices) {
     vtr::vector<ClusterNetId, std::vector<int>> net_rr_terminals;
 
-    int inode, i, j, node_block_pin, iclass;
-
     auto& cluster_ctx = g_vpr_ctx.clustering();
     auto& place_ctx = g_vpr_ctx.placement();
 
@@ -1024,19 +1051,19 @@ static vtr::vector<ClusterNetId, std::vector<int>> load_net_rr_terminals(const t
         int pin_count = 0;
         for (auto pin_id : cluster_ctx.clb_nlist.net_pins(net_id)) {
             auto block_id = cluster_ctx.clb_nlist.pin_block(pin_id);
-            i = place_ctx.block_locs[block_id].loc.x;
-            j = place_ctx.block_locs[block_id].loc.y;
+            int i = place_ctx.block_locs[block_id].loc.x;
+            int j = place_ctx.block_locs[block_id].loc.y;
             auto type = physical_tile_type(block_id);
 
             /* In the routing graph, each (x, y) location has unique pins on it
              * so when there is capacity, blocks are packed and their pin numbers
              * are offset to get their actual rr_node */
-            node_block_pin = cluster_ctx.clb_nlist.pin_physical_index(pin_id);
+            int phys_pin = tile_pin_index(pin_id);
 
-            iclass = type->pin_class[node_block_pin];
+            int iclass = type->pin_class[phys_pin];
 
-            inode = get_rr_node_index(L_rr_node_indices, i, j, (pin_count == 0 ? SOURCE : SINK), /* First pin is driver */
-                                      iclass);
+            int inode = get_rr_node_index(L_rr_node_indices, i, j, (pin_count == 0 ? SOURCE : SINK), /* First pin is driver */
+                                          iclass);
             net_rr_terminals[net_id][pin_count] = inode;
             pin_count++;
         }
@@ -1258,6 +1285,25 @@ void push_back_node(int inode, float total_cost, int prev_node, int prev_edge, f
     hptr->backward_path_cost = backward_path_cost;
     hptr->R_upstream = R_upstream;
     push_back(hptr);
+}
+
+void add_node_to_heap(int inode, float total_cost, int prev_node, int prev_edge, float backward_path_cost, float R_upstream) {
+    /* Puts an rr_node on the heap with the same condition as node_to_heap,
+     * but do not fix heap property yet as that is more efficiently done from
+     * bottom up with build_heap    */
+
+    auto& route_ctx = g_vpr_ctx.routing();
+    if (total_cost >= route_ctx.rr_node_route_inf[inode].path_cost)
+        return;
+
+    t_heap* hptr = alloc_heap_data();
+    hptr->index = inode;
+    hptr->cost = total_cost;
+    hptr->u.prev.node = prev_node;
+    hptr->u.prev.edge = prev_edge;
+    hptr->backward_path_cost = backward_path_cost;
+    hptr->R_upstream = R_upstream;
+    add_to_heap(hptr);
 }
 
 bool is_valid() {
@@ -1515,7 +1561,7 @@ void print_route(FILE* fp, const vtr::vector<ClusterNetId, t_traceback>& traceba
 
             for (auto pin_id : cluster_ctx.clb_nlist.net_pins(net_id)) {
                 ClusterBlockId block_id = cluster_ctx.clb_nlist.pin_block(pin_id);
-                int pin_index = cluster_ctx.clb_nlist.pin_physical_index(pin_id);
+                int pin_index = tile_pin_index(pin_id);
                 int iclass = physical_tile_type(block_id)->pin_class[pin_index];
 
                 fprintf(fp, "Block %s (#%zu) at (%d,%d), Pin class %d.\n",
@@ -1598,6 +1644,7 @@ void reserve_locally_used_opins(float pres_fac, float acc_fac, bool rip_up_local
                 /* Always 0 for pads and for RECEIVER (IPIN) classes */
                 for (ipin = 0; ipin < num_local_opin; ipin++) {
                     inode = route_ctx.clb_opins_used_locally[blk_id][iclass][ipin];
+                    VTR_ASSERT(inode >= 0 && inode < (ssize_t)device_ctx.rr_nodes.size());
                     adjust_one_rr_occ_and_apcost(inode, -1, pres_fac, acc_fac);
                 }
             }

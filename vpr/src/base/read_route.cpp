@@ -109,6 +109,8 @@ bool read_route(const char* route_file, const t_router_opts& router_opts, bool v
     fp.close();
 
     /*Correctly set up the clb opins*/
+    reserve_locally_used_opins(router_opts.initial_pres_fac,
+                               router_opts.acc_fac, false);
     recompute_occupancy_from_scratch();
 
     /* Note: This pres_fac is not necessarily correct since it isn't the first routing iteration*/
@@ -378,7 +380,7 @@ static void process_global_blocks(std::ifstream& fp, ClusterNetId inet, const ch
                           x, y, place_ctx.block_locs[bnum].loc.x, place_ctx.block_locs[bnum].loc.y);
             }
 
-            int pin_index = cluster_ctx.clb_nlist.net_pin_physical_index(inet, pin_counter);
+            int pin_index = net_pin_to_tile_pin_index(inet, pin_counter);
             if (physical_tile_type(bnum)->pin_class[pin_index] != atoi(tokens[7].c_str())) {
                 vpr_throw(VPR_ERROR_ROUTE, filename, lineno,
                           "The pin class %d of %lu net does not match given ",

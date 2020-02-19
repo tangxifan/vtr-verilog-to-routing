@@ -1,5 +1,5 @@
-#!/bin/bash
-SHELL=/bin/bash
+#!/usr/bin/env bash
+SHELL=$(type -P bash)
 
 THIS_SCRIPT_PATH=$(readlink -f $0)
 THIS_DIR=$(dirname ${THIS_SCRIPT_PATH})
@@ -23,6 +23,8 @@ PERF_EXEC="perf stat record -a -d -d -d -o"
 GDB_EXEC="gdb --args"
 EXEC_PREFIX=""
 
+TOOL_LIST=""
+
 TEST_NAME="N/A"
 LOG=""
 LOG_FILE=""
@@ -37,6 +39,7 @@ USE_TIME="on"
 USE_LOGS="on"
 COLORIZE_OUTPUT="off"
 VERBOSE="0"
+DRY_RUN=""
 
 function print_exit_type() {
 	CODE="$1"
@@ -98,7 +101,15 @@ Usage: ./exec_wrapper.sh [options] <path/to/arguments.file>
 			--time_limit                                * stops Odin after X seconds
 			--limit_ressource				            * limit ressource usage using ulimit -m (25% of hrdw memory) and nice value of 19
 			--verbosity [0, 1, 2]						* [0] no output, [1] output on error, [2] output the log to stdout
+			--no_color                                  * force no color on output
+			--dry_run  [exit_code]                      * performs a dry run, without actually run the tool and return the defined exit_code
 "
+}
+
+function dry_runner() {
+	# this simply prints the argument and return passed
+	echo "$*"
+	return $(( ${DRY_RUN} + 0 ))
 }
 
 function log_it {
@@ -213,6 +224,12 @@ then
 	_exit_with_code "-1"
 fi
 
+if [[ -t 1 ]] && [[ -t 2 ]] && [[ ! -p /dev/stdout ]] && [[ ! -p /dev/stderr ]]
+then
+	COLORIZE_OUTPUT="on"
+	log_it "Using colorized output\n"
+fi
+
 while [[ "$#" > 0 ]]
 do 
 	case $1 in
@@ -242,6 +259,10 @@ do
 			RESTRICT_RESSOURCE="on" 
 			;;
 
+		--no_color)
+			COLORIZE_OUTPUT="off"
+			;;
+			
 		--verbosity)
 			case "_$2" in
 				_0)	VERBOSE="0";;
@@ -267,16 +288,18 @@ do
 			else
 				case $2 in
 					valgrind)
+						TOOL_LIST="valgrind ${TOOL_LIST}"
 						EXEC_PREFIX="${VALGRIND_EXEC} ${EXEC_PREFIX}"
 						;;
 					gdb)
+						TOOL_LIST="gdb ${TOOL_LIST}"
 						USE_TIMEOUT="off"
 						USE_LOGS="off"
 						EXEC_PREFIX="${GDB_EXEC} ${EXEC_PREFIX}"
 						;;
 					perf)
+						TOOL_LIST="perf ${TOOL_LIST}"
 						EXEC_PREFIX="${PERF_EXEC} ${EXEC_PREFIX}"
-						shift
 						;;
 					*)
 						echo "Invalid tool $2 passed in"
@@ -288,6 +311,11 @@ do
 				shift
 			fi
 			;;
+		--dry_run)
+			DRY_RUN="$2"
+			shift
+			;;
+
 		*) 
 			break
 			;;
@@ -300,13 +328,6 @@ ARG_FILE=$1
 if [ "${RESTRICT_RESSOURCE}" == "on" ]
 then
 	restrict_ressource
-fi
-
-
-if [[ -t 1 ]] && [[ -t 2 ]] && [[ ! -p /dev/stdout ]] && [[ ! -p /dev/stderr ]]
-then
-	COLORIZE_OUTPUT="on"
-	log_it "Using colorized output\n"
 fi
 
 if [ "${USE_LOGS}" == "on" ]
@@ -331,15 +352,24 @@ fi
 
 if [ "${USE_TIME}" == "on" ]
 then
+	TOOL_LIST="time ${TOOL_LIST}"
 	EXEC_PREFIX="${TIME_EXEC} --output=${LOG_FILE} --append ${EXEC_PREFIX}"
 	log_it "running with /bin/time\n"
 fi
 
 if [ "${USE_TIMEOUT}" == "on" ]
 then
+	TOOL_LIST="timeout ${TOOL_LIST}"
 	EXEC_PREFIX="timeout ${TIME_LIMIT} ${EXEC_PREFIX}"
 	log_it "running with timeout ${TIME_LIMIT}\n"
 fi
+
+if [ "_${DRY_RUN}" != "_" ]
+then
+	EXEC_PREFIX="dry_runner ${EXEC_PREFIX}"
+	log_it "running a dry run with exit code ${DRY_RUN}\n"
+fi
+
 dump_log
 
 pretty_print_status ""
@@ -352,22 +382,51 @@ then
 	log_it "Must define a path to a valid argument file"
 	dump_log
 else
-	_ARGS=$(cat ${ARG_FILE})
-	if [ "${USE_LOGS}" == "on" ]
-	then
-		if [ "${VERBOSE}" == "2" ]
+	failed_requirements=""
+	# test all necessary tool
+	for tool_used in ${TOOL_LIST}
+	do
+		which ${tool_used} &> /dev/null
+		if [ "$?" != "0" ]; 
 		then
-			${EXEC_PREFIX} ${_ARGS} 2>&1 | tee ${LOG_FILE}
-		else
-			${EXEC_PREFIX} ${_ARGS} &>> ${LOG_FILE}
+			failed_requirements="${tool_used} ${failed_requirements}"
 		fi
-	else
-		${EXEC_PREFIX} ${_ARGS}
-	fi
-	EXIT_CODE=$?
-fi
+	done
 
-display "${EXIT_CODE}"
+	if [ "_${failed_requirements}" != "_" ];
+	then
+		if [ "${USE_LOGS}" == "on" ]
+		then
+			if [ "${VERBOSE}" == "2" ]
+			then
+				echo "missing \"${failed_requirements}\"" | tee ${LOG_FILE}
+			else
+				echo "missing \"${failed_requirements}\"" &>> ${LOG_FILE}
+			fi	
+		else
+			echo "missing \"${failed_requirements}\""
+		fi
+
+		EXIT_CODE="-1"
+		pretty_print_status "Missing package: ${failed_requirements}"
+
+	else
+		_ARGS=$(cat ${ARG_FILE})
+		if [ "${USE_LOGS}" == "on" ]
+		then
+			if [ "${VERBOSE}" == "2" ]
+			then
+				${EXEC_PREFIX} ${_ARGS} 2>&1 | tee ${LOG_FILE}
+			else
+				${EXEC_PREFIX} ${_ARGS} &>> ${LOG_FILE}
+			fi
+		else
+			${EXEC_PREFIX} ${_ARGS}
+		fi
+		EXIT_CODE=$?
+		display "${EXIT_CODE}"
+	fi
+fi
 
 EXIT_STATUS=0
 if [ "${EXIT_CODE}" != "0" ]

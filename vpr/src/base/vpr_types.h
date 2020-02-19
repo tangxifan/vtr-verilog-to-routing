@@ -112,6 +112,11 @@ enum class e_route_bb_update {
     DYNAMIC //Rotuer net bounding boxes are updated
 };
 
+enum class e_router_initial_timing {
+    ALL_CRITICAL,
+    LOOKAHEAD
+};
+
 enum class e_const_gen_inference {
     NONE,    //No constant generator inference
     COMB,    //Only combinational constant generator inference
@@ -625,13 +630,11 @@ struct t_place_region {
  * x: x-coordinate
  * y: y-coordinate
  * z: occupancy coordinate
- * is_fixed: true if this block's position is fixed by the user and shouldn't be moved during annealing
- * nets_and_pins_synced_to_z_coordinate: true if the associated clb's pins have been synced to the z location (i.e. after placement) */
+ * is_fixed: true if this block's position is fixed by the user and shouldn't be moved during annealing */
 struct t_block_loc {
     t_pl_loc loc;
 
     bool is_fixed = false;
-    bool nets_and_pins_synced_to_z_coordinate = false;
 };
 
 /* Stores the clustered blocks placed at a particular grid location */
@@ -896,6 +899,7 @@ enum class e_timing_report_detail {
     NETLIST,          //Only show netlist elements
     AGGREGATED,       //Show aggregated intra-block and inter-block delays
     DETAILED_ROUTING, //Show inter-block routing resources used
+    DEBUG,            //Show additional internal debugging information
 };
 
 enum class e_incr_reroute_delay_ripup {
@@ -939,12 +943,17 @@ struct t_router_opts {
     float congested_routing_iteration_threshold_frac;
     e_route_bb_update route_bb_update;
     enum e_clock_modeling clock_modeling; //How clock pins and nets should be handled
+    bool two_stage_clock_routing;         //How clock nets on dedicated networks should be routed
     int high_fanout_threshold;
     int router_debug_net;
     int router_debug_sink_rr;
+    int router_debug_iteration;
     e_router_lookahead lookahead_type;
     int max_convergence_count;
     float reconvergence_cpd_threshold;
+    e_router_initial_timing initial_timing;
+    bool update_lower_bound_delays;
+
     std::string first_iteration_timing_report_file;
     bool strict_checks;
 
@@ -960,6 +969,7 @@ struct t_analysis_opts {
     int timing_report_npaths;
     e_timing_report_detail timing_report_detail;
     bool timing_report_skew;
+    std::string echo_dot_timing_graph_node;
 };
 
 /* Defines the detailed routing architecture of the FPGA.  Only important   *
@@ -1131,8 +1141,6 @@ struct t_linked_f_pointer {
     float* fptr;
 };
 
-typedef std::vector<std::vector<std::vector<std::vector<std::vector<int>>>>> t_rr_node_indices; //[0..num_rr_types-1][0..grid_width-1][0..grid_height-1][0..NUM_SIDES-1][0..max_ptc-1]
-
 /* Type of a routing resource node.  x-directed channel segment,   *
  * y-directed channel segment, input pin to a clb to pad, output   *
  * from a clb or pad (i.e. output pin of a net) and:               *
@@ -1152,6 +1160,9 @@ typedef enum e_rr_type : unsigned char {
 
 constexpr std::array<t_rr_type, NUM_RR_TYPES> RR_TYPES = {{SOURCE, SINK, IPIN, OPIN, CHANX, CHANY}};
 constexpr std::array<const char*, NUM_RR_TYPES> rr_node_typename{{"SOURCE", "SINK", "IPIN", "OPIN", "CHANX", "CHANY"}};
+
+//[0..num_rr_types-1][0..grid_width-1][0..grid_height-1][0..NUM_SIDES-1][0..max_ptc-1]
+typedef std::array<vtr::NdMatrix<std::vector<int>, 3>, NUM_RR_TYPES> t_rr_node_indices;
 
 /* Basic element used to store the traceback (routing) of each net.        *
  * index:   Array index (ID) of this routing resource node.                *
@@ -1292,6 +1303,7 @@ struct t_vpr_setup {
     std::string device_layout;
     e_constant_net_method constant_net_method; //How constant nets should be handled
     e_clock_modeling clock_modeling;           //How clocks should be handled
+    bool two_stage_clock_routing;              //How clocks should be routed in the presence of a dedicated clock network
     bool exit_before_pack;                     //Exits early before starting packing (useful for collecting statistics without running/loading any stages)
 };
 

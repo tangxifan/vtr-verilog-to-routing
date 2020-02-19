@@ -58,6 +58,12 @@ std::vector<int> get_rr_node_indices(const t_rr_node_indices& L_rr_node_indices,
                                      t_rr_type rr_type,
                                      int ptc);
 
+std::vector<int> get_rr_node_indices(const t_rr_node_indices& L_rr_node_indices,
+                                     int x,
+                                     int y,
+                                     t_rr_type rr_type,
+                                     e_side side = NUM_SIDES);
+
 //Returns all x-channel or y-channel wires at the specified location
 std::vector<int> get_rr_node_chan_wires_at_location(const t_rr_node_indices& L_rr_node_indices,
                                                     t_rr_type rr_type,
@@ -214,9 +220,9 @@ void load_sblock_pattern_lookup(const int i,
                                 const enum e_switch_block_type switch_block_type,
                                 t_sblock_pattern& sblock_pattern);
 
-int* get_seg_track_counts(const int num_sets,
-                          const std::vector<t_segment_inf>& segment_inf,
-                          const bool use_full_seg_groups);
+std::unique_ptr<int[]> get_seg_track_counts(const int num_sets,
+                                            const std::vector<t_segment_inf>& segment_inf,
+                                            const bool use_full_seg_groups);
 
 void dump_seg_details(const t_chan_seg_details* seg_details,
                       int max_chan_width,
@@ -235,6 +241,6 @@ void dump_sblock_pattern(const t_sblock_pattern& sblock_pattern,
                          const char* fname);
 
 //Partitions RR graph edges to allow fast access to configurable/non-configurabe edge subsets
-void partition_rr_graph_edges(DeviceContext& device_ctx);
+void partition_rr_graph_edges(std::vector<t_rr_node>* rr_nodes);
 
 #endif

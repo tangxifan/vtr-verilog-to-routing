@@ -86,6 +86,10 @@ class flat_map {
 
     //direct vector constructor
     explicit flat_map(std::vector<value_type>&& values) {
+        assign(std::move(values));
+    }
+
+    void assign(std::vector<value_type>&& values) {
         //By moving the values this should be more efficient
         //than the range constructor which must copy each element
         vec_ = std::move(values);
@@ -122,13 +126,22 @@ class flat_map {
     }
 
     mapped_type& operator[](const key_type& key) {
-        auto iter = find(key);
+        auto iter = std::lower_bound(begin(), end(), key, value_comp());
         if (iter == end()) {
-            //Not found
-            iter = insert(std::make_pair(key, mapped_type())).first;
+            // The new element should be placed at the end, so do so.
+            vec_.emplace_back(std::make_pair(key, mapped_type()));
+            return vec_.back().second;
+        } else {
+            if (iter->first == key) {
+                // The element already exists, return it.
+                return iter->second;
+            } else {
+                // The element does not exist, insert such that vector remains
+                // sorted.
+                iter = vec_.emplace(iter, std::make_pair(key, mapped_type()));
+                return iter->second;
+            }
         }
-
-        return iter->second;
     }
 
     mapped_type& at(const key_type& key) {
@@ -157,6 +170,19 @@ class flat_map {
         }
     }
 
+    std::pair<iterator, bool> emplace(const value_type&& value) {
+        auto iter = lower_bound(value.first);
+        if (iter != end() && keys_equivalent(iter->first, value.first)) {
+            //Found existing
+            return std::make_pair(iter, false);
+        } else {
+            //Emplace
+            iter = emplace(iter, value);
+
+            return std::make_pair(iter, true);
+        }
+    }
+
     //Insert value with position hint
     iterator insert(const_iterator position, const value_type& value) {
         //In a legal position
@@ -164,6 +190,17 @@ class flat_map {
         VTR_ASSERT((size() > 0 && position == --end()) || position == end() || !value_comp()(*(position + 1), value));
 
         iterator iter = vec_.insert(position, value);
+
+        return iter;
+    }
+
+    //Emplace value with position hint
+    iterator emplace(const_iterator position, const value_type& value) {
+        //In a legal position
+        VTR_ASSERT(position == begin() || value_comp()(*(position - 1), value));
+        VTR_ASSERT((size() > 0 && position == --end()) || position == end() || !value_comp()(*(position + 1), value));
+
+        iterator iter = vec_.emplace(position, value);
 
         return iter;
     }

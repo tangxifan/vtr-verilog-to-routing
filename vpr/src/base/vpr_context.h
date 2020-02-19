@@ -21,6 +21,7 @@
 #include "router_lookahead.h"
 #include "place_macro.h"
 #include "compressed_grid.h"
+#include "metadata_storage.h"
 
 //A Context is collection of state relating to a particular part of VPR
 //
@@ -120,7 +121,10 @@ struct DeviceContext : public Context {
     /* Special pointers to identify special blocks on an FPGA: I/Os, unused, and default */
     std::set<t_physical_tile_type_ptr> input_types;
     std::set<t_physical_tile_type_ptr> output_types;
-    t_physical_tile_type_ptr EMPTY_TYPE;
+
+    /* Empty types */
+    t_physical_tile_type_ptr EMPTY_PHYSICAL_TILE_TYPE;
+    t_logical_block_type_ptr EMPTY_LOGICAL_BLOCK_TYPE;
 
     /* block_types are blocks that can be moved by the placer
      * such as: I/Os, CLBs, memories, multipliers, etc
@@ -128,6 +132,10 @@ struct DeviceContext : public Context {
      */
     std::vector<t_physical_tile_type> physical_tile_types;
     std::vector<t_logical_block_type> logical_block_types;
+
+    /* Boolean that indicates whether the architecture implements an N:M
+     * physical tiles to logical blocks mapping */
+    bool has_multiple_equivalent_tiles;
 
     /*******************************************************************
      * Routing related
@@ -162,11 +170,17 @@ struct DeviceContext : public Context {
     std::vector<std::unique_ptr<ClockNetwork>> clock_networks;
     std::vector<std::unique_ptr<ClockConnection>> clock_connections;
 
+    // rr_node idx that connects to the input of all clock network wires
+    // Useful for two stage clock routing
+    // XXX: currently only one place to source the clock networks so only storing
+    //      a single value
+    int virtual_clock_network_root_idx;
+
     /** Attributes for each rr_node.
      * key:     rr_node index
      * value:   map of <attribute_name, attribute_value>
      */
-    std::unordered_map<int, t_metadata_dict> rr_node_metadata;
+    MetadataStorage<int> rr_node_metadata;
     /* Attributes for each rr_edge                                             *
      * key:     <source rr_node_index, sink rr_node_index, iswitch>            *
      * iswitch: Index of the switch type used to go from this rr_node to       *
@@ -174,8 +188,7 @@ struct DeviceContext : public Context {
      *          (i.e. this node is the last one (a SINK) in a branch of the    *
      *          net's routing).                                                *
      * value:   map of <attribute_name, attribute_value>                       */
-    std::unordered_map<std::tuple<int, int, short>,
-                       t_metadata_dict>
+    MetadataStorage<std::tuple<int, int, short>>
         rr_edge_metadata;
 
     /*
@@ -240,6 +253,9 @@ struct ClusteringContext : public Context {
 struct PlacementContext : public Context {
     //Clustered block placement locations
     vtr::vector_map<ClusterBlockId, t_block_loc> block_locs;
+
+    //Clustered pin placement mapping with physical pin
+    vtr::vector_map<ClusterPinId, int> physical_pins;
 
     //Clustered block associated with each grid location (i.e. inverse of block_locs)
     vtr::Matrix<t_grid_blocks> grid_blocks; //[0..device_ctx.grid.width()-1][0..device_ctx.grid.width()-1]

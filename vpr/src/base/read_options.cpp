@@ -395,6 +395,8 @@ struct ParseTimingReportDetail {
             conv_value.set_value(e_timing_report_detail::AGGREGATED);
         else if (str == "detailed")
             conv_value.set_value(e_timing_report_detail::DETAILED_ROUTING);
+        else if (str == "debug")
+            conv_value.set_value(e_timing_report_detail::DEBUG);
         else {
             std::stringstream msg;
             msg << "Invalid conversion from '" << str << "' to e_timing_report_detail (expected one of: " << argparse::join(default_choices(), ", ") << ")";
@@ -412,12 +414,15 @@ struct ParseTimingReportDetail {
         } else if (val == e_timing_report_detail::DETAILED_ROUTING) {
             VTR_ASSERT(val == e_timing_report_detail::DETAILED_ROUTING);
             conv_value.set_value("detailed");
+        } else {
+            VTR_ASSERT(val == e_timing_report_detail::DEBUG);
+            conv_value.set_value("debug");
         }
         return conv_value;
     }
 
     std::vector<std::string> default_choices() {
-        return {"netlist", "aggregated", "detailed"};
+        return {"netlist", "aggregated", "detailed", "debug"};
     }
 };
 
@@ -756,6 +761,37 @@ struct ParseReducer {
     }
 };
 
+struct ParseRouterFirstIterTiming {
+    ConvertedValue<e_router_initial_timing> from_str(std::string str) {
+        ConvertedValue<e_router_initial_timing> conv_value;
+        if (str == "all_critical")
+            conv_value.set_value(e_router_initial_timing::ALL_CRITICAL);
+        else if (str == "lookahead")
+            conv_value.set_value(e_router_initial_timing::LOOKAHEAD);
+        else {
+            std::stringstream msg;
+            msg << "Invalid conversion from '" << str << "' to e_router_initial_timing (expected one of: " << argparse::join(default_choices(), ", ") << ")";
+            conv_value.set_error(msg.str());
+        }
+        return conv_value;
+    }
+
+    ConvertedValue<std::string> to_str(e_router_initial_timing val) {
+        ConvertedValue<std::string> conv_value;
+        if (val == e_router_initial_timing::ALL_CRITICAL)
+            conv_value.set_value("all_critical");
+        else {
+            VTR_ASSERT(val == e_router_initial_timing::LOOKAHEAD);
+            conv_value.set_value("lookahead");
+        }
+        return conv_value;
+    }
+
+    std::vector<std::string> default_choices() {
+        return {"all_critical", "lookahead"};
+    }
+};
+
 argparse::ArgumentParser create_arg_parser(std::string prog_name, t_options& args) {
     std::string description =
         "Implements the specified circuit onto the target FPGA architecture"
@@ -907,9 +943,7 @@ argparse::ArgumentParser create_arg_parser(std::string prog_name, t_options& arg
             "Specifies how constant nets (i.e. those driven to a constant\n"
             "value) are handled:\n"
             " * global: Treat constant nets as globals (not routed)\n"
-            " * route : Treat constant nets as normal nets (routed)\n"
-            " * dedicated_network : Build a dedicated clock network based on the\n"
-            "                       clock network specified in the architecture file\n")
+            " * route : Treat constant nets as normal nets (routed)\n")
         .default_value("global")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
@@ -919,8 +953,19 @@ argparse::ArgumentParser create_arg_parser(std::string prog_name, t_options& arg
             " * ideal: Treat clock pins as ideal\n"
             "          (i.e. no routing delays on clocks)\n"
             " * route: Treat the clock pins as normal nets\n"
-            "          (i.e. routed using inter-block routing)\n")
+            "          (i.e. routed using inter-block routing)\n"
+            " * dedicated_network : Build a dedicated clock network based on the\n"
+            "                       clock network specified in the architecture file\n")
         .default_value("ideal")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
+    gen_grp.add_argument<bool, ParseOnOff>(args.two_stage_clock_routing, "--two_stage_clock_routing")
+        .help(
+            "Routes clock nets in two stages if using a dedicated clock network.\n"
+            " * First stage: From the Net source to a dedicated clock network source\n"
+            " * Second stage: From the clock network source to net sinks\n")
+        .default_value("off")
+        .action(argparse::Action::STORE_TRUE)
         .show_in(argparse::ShowIn::HELP_ONLY);
 
     gen_grp.add_argument<bool, ParseOnOff>(args.exit_before_pack, "--exit_before_pack")
@@ -1606,6 +1651,23 @@ argparse::ArgumentParser create_arg_parser(std::string prog_name, t_options& arg
         .default_value("0.99")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
+    route_timing_grp.add_argument<e_router_initial_timing, ParseRouterFirstIterTiming>(args.router_initial_timing, "--router_initial_timing")
+        .help(
+            "Controls how criticality is determined at the start of the first routing iteration.\n"
+            " * all_critical: All connections are considered timing\n"
+            "                 critical.\n"
+            " * lookahead   : Connection criticalities are determined\n"
+            "                 from timing analysis assuming best-case\n"
+            "                 connection delays as estimated by the\n"
+            "                 router's lookahead.\n")
+        .default_value("all_critical")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
+    route_timing_grp.add_argument<bool, ParseOnOff>(args.router_update_lower_bound_delays, "--router_update_lower_bound_delays")
+        .help("Controls whether the router updates lower bound connection delays after the 1st routing iteration.")
+        .default_value("off")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
     route_timing_grp.add_argument(args.router_first_iteration_timing_report_file, "--router_first_iter_timing_report")
         .help("Name of the post first routing iteration timing report file (not generated if unspecfied)")
         .default_value("")
@@ -1613,12 +1675,12 @@ argparse::ArgumentParser create_arg_parser(std::string prog_name, t_options& arg
 
     route_timing_grp.add_argument(args.router_debug_net, "--router_debug_net")
         .help(
-            "Controls when router debugging is enabled.\n"
+            "Controls when router debugging is enabled for nets.\n"
             " * For values >= 0, the value is taken as the net ID for\n"
             "   which to enable router debug output.\n"
             " * For value == -1, router debug output is enabled for\n"
             "   all nets.\n"
-            " * For values < -1, all net-sbased router debug output is disabled.\n"
+            " * For values < -1, all net-based router debug output is disabled.\n"
             "Note if VPR as compiled without debug logging enabled this will produce only limited output.\n")
         .default_value("-2")
         .show_in(argparse::ShowIn::HELP_ONLY);
@@ -1629,6 +1691,16 @@ argparse::ArgumentParser create_arg_parser(std::string prog_name, t_options& arg
             " * For values >= 0, the value is taken as the sink RR Node ID for\n"
             "   which to enable router debug output.\n"
             " * For values < 0, sink-based router debug output is disabled.\n"
+            "Note if VPR as compiled without debug logging enabled this will produce only limited output.\n")
+        .default_value("-2")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
+    route_timing_grp.add_argument(args.router_debug_iteration, "--router_debug_iteration")
+        .help(
+            "Controls when router debugging is enabled for the specific router iteration.\n"
+            " * For values >= 0, the value is taken as the iteration number for\n"
+            "   which to enable router debug output.\n"
+            " * For values < 0, all iteration-based router debug output is disabled.\n"
             "Note if VPR as compiled without debug logging enabled this will produce only limited output.\n")
         .default_value("-2")
         .show_in(argparse::ShowIn::HELP_ONLY);
@@ -1657,13 +1729,24 @@ argparse::ArgumentParser create_arg_parser(std::string prog_name, t_options& arg
             "Controls how much detail is provided in timing reports.\n"
             " * netlist: Shows only netlist pins\n"
             " * aggregated: Like 'netlist', but also shows aggregated intra-block/inter-block delays\n"
-            " * detailed: Lke 'aggregated' but shows detailed routing instead of aggregated inter-block delays\n")
+            " * detailed: Like 'aggregated' but shows detailed routing instead of aggregated inter-block delays\n"
+            " * debug: Like 'detailed' but shows additional tool internal debug information\n")
         .default_value("netlist")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
     analysis_grp.add_argument<bool, ParseOnOff>(args.timing_report_skew, "--timing_report_skew")
         .help("Controls whether skew timing reports are generated\n")
         .default_value("off")
+        .show_in(argparse::ShowIn::HELP_ONLY);
+
+    analysis_grp.add_argument(args.echo_dot_timing_graph_node, "--echo_dot_timing_graph_node")
+        .help(
+            "Controls how the timing graph echo file in DOT/GraphViz format is created when\n"
+            "'--echo_file on' is set:\n"
+            " * -1: All nodes are dumped into the DOT file\n"
+            " * >= 0: Only the transitive fanin/fanout of the node is dumped (easier to view)\n"
+            " * a string: Interpretted as a VPR pin name which is converted to a node id, and dumped as above\n")
+        .default_value("-1")
         .show_in(argparse::ShowIn::HELP_ONLY);
 
     auto& power_grp = parser.add_argument_group("power analysis options");

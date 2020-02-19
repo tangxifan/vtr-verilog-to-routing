@@ -216,6 +216,7 @@ void vpr_init_with_options(const t_options* options, t_vpr_setup* vpr_setup, t_a
     vpr_setup->device_layout = options->device_layout;
     vpr_setup->constant_net_method = options->constant_net_method;
     vpr_setup->clock_modeling = options->clock_modeling;
+    vpr_setup->two_stage_clock_routing = options->two_stage_clock_routing;
     vpr_setup->exit_before_pack = options->exit_before_pack;
 
     VTR_LOG("\n");
@@ -417,22 +418,35 @@ void vpr_create_device_grid(const t_vpr_setup& vpr_setup, const t_arch& Arch) {
 
     VTR_LOG("\n");
     VTR_LOG("Resource usage...\n");
-    for (const auto& type : device_ctx.physical_tile_types) {
-        VTR_LOG("\tNetlist      %d\tblocks of type: %s\n",
-                num_type_instances[logical_block_type(&type)], type.name);
-        VTR_LOG("\tArchitecture %d\tblocks of type: %s\n",
-                device_ctx.grid.num_instances(&type), type.name);
+    for (const auto& type : device_ctx.logical_block_types) {
+        if (is_empty_type(&type)) continue;
+
+        VTR_LOG("\tNetlist\n\t\t%d\tblocks of type: %s\n",
+                num_type_instances[&type], type.name);
+
+        VTR_LOG("\tArchitecture\n");
+        for (const auto equivalent_tile : type.equivalent_tiles) {
+            VTR_LOG("\t\t%d\tblocks of type: %s\n",
+                    device_ctx.grid.num_instances(equivalent_tile), equivalent_tile->name);
+        }
     }
     VTR_LOG("\n");
 
     float device_utilization = calculate_device_utilization(device_ctx.grid, num_type_instances);
     VTR_LOG("Device Utilization: %.2f (target %.2f)\n", device_utilization, target_device_utilization);
     for (const auto& type : device_ctx.physical_tile_types) {
-        float util = 0.;
-        if (device_ctx.grid.num_instances(&type) != 0) {
-            util = float(num_type_instances[logical_block_type(&type)]) / device_ctx.grid.num_instances(&type);
+        if (is_empty_type(&type)) {
+            continue;
         }
-        VTR_LOG("\tBlock Utilization: %.2f Type: %s\n", util, type.name);
+
+        if (device_ctx.grid.num_instances(&type) != 0) {
+            float util = 0.;
+            VTR_LOG("\tPhysical Tile %s:\n", type.name);
+            for (auto logical_block : type.equivalent_sites) {
+                util = float(num_type_instances[logical_block]) / device_ctx.grid.num_instances(&type);
+                VTR_LOG("\tBlock Utilization: %.2f Logical Block: %s\n", util, logical_block->name);
+            }
+        }
     }
     VTR_LOG("\n");
 
@@ -879,7 +893,7 @@ static void get_intercluster_switch_fanin_estimates(const t_vpr_setup& vpr_setup
     //Build a dummy 10x10 device to determine the 'best' block type to use
     auto grid = create_device_grid(vpr_setup.device_layout, arch.grid_layouts, 10, 10);
 
-    auto type = physical_tile_type(find_most_common_block_type(grid));
+    auto type = find_most_common_tile_type(grid);
     /* get Fc_in/out for most common block (e.g. logic blocks) */
     VTR_ASSERT(type->fc_specs.size() > 0);
 
@@ -1138,14 +1152,6 @@ void vpr_analysis(t_vpr_setup& vpr_setup, const t_arch& Arch, const RouteStatus&
         VPR_FATAL_ERROR(VPR_ERROR_ANALYSIS, "No routing loaded -- can not perform post-routing analysis");
     }
 
-    vtr::vector<ClusterNetId, float*> net_delay;
-    vtr::t_chunk net_delay_ch;
-    if (vpr_setup.TimingEnabled) {
-        //Load the net delays
-        net_delay = alloc_net_delay(&net_delay_ch);
-        load_net_delay_from_routing(net_delay);
-    }
-
     routing_stats(vpr_setup.RouterOpts.full_stats, vpr_setup.RouterOpts.route_type,
                   vpr_setup.Segments,
                   vpr_setup.RoutingArch.R_minW_nmos,
@@ -1155,6 +1161,13 @@ void vpr_analysis(t_vpr_setup& vpr_setup, const t_arch& Arch, const RouteStatus&
                   vpr_setup.RoutingArch.wire_to_rr_ipin_switch);
 
     if (vpr_setup.TimingEnabled) {
+        vtr::vector<ClusterNetId, float*> net_delay;
+        vtr::t_chunk net_delay_ch;
+
+        //Load the net delays
+        net_delay = alloc_net_delay(&net_delay_ch);
+        load_net_delay_from_routing(net_delay);
+
         //Do final timing analysis
         auto analysis_delay_calc = std::make_shared<AnalysisDelayCalculator>(atom_ctx.nlist, atom_ctx.lookup, net_delay);
         auto timing_info = make_setup_hold_timing_info(analysis_delay_calc);
